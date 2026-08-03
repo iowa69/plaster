@@ -147,6 +147,7 @@ export function createApp() {
     app.layout?.markDirty();
 
     fillComponentSelects();
+    renderer.setColourMode($('colour-mode')?.value || 'random');
     updateColourLegend();
     updateCounts();
     const hint = $('empty-hint');
@@ -835,8 +836,14 @@ export function createApp() {
       renderer.setOption('widthScale', Number(e.target.value));
     });
     on('size-scale', 'input', (e) => {
-      $('size-scale-out').value = Number(e.target.value).toFixed(1);
-      renderer.setOption('sizeScale', Number(e.target.value));
+      const v = Number(e.target.value) || 1;
+      $('size-scale-out').value = v.toFixed(1);
+      // Node length is a property of the model, not a render option: the
+      // polyline geometry and the layout's rest lengths both derive from it.
+      graph.rescale(v);
+      graph.updateBounds();
+      renderer.updateStyle();
+      app.layout?.markDirty();
       renderer.requestDraw();
     });
 

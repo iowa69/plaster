@@ -31,26 +31,47 @@ export const END_END = 1;
 
 /** Geometry defaults; the UI can override `lengthScale` (node size slider). */
 export const DEFAULT_GEOM = Object.freeze({
-  minLen: 26,          // shortest polyline in world units
-  maxLen: 900,         // longest polyline in world units
-  lengthScale: 2.2,    // multiplies sqrt(bp)
-  particleSpacing: 25, // world units of polyline per particle
+  minLen: 5,           // shortest polyline in world units; short nodes are stubs
+  maxLen: 40000,       // a sanity ceiling, not a working limit
+  //: World units per megabase -- an **absolute** scale, as Bandage uses, not one
+  //  normalised per graph. This is what makes a small graph read as short thick
+  //  bars and a 5 Mb assembly as long thin ribbons: the same contig is drawn the
+  //  same size whatever else is loaded alongside it.
+  unitsPerMegabase: 1000,
+  lengthScale: 1,      // user multiplier from the "node length" slider
+  // Fewer, longer sub-segments: a chain with many particles behaves like a
+  // floppy rope under the force sim and buckles into a serpentine. The
+  // renderer smooths between control points, so a handful is enough.
+  particleSpacing: 70,
   minParticles: 2,
-  maxParticles: 12,
+  maxParticles: 10,
 });
 
 /**
- * Draw length of a segment: `clamp(minLen, maxLen, scale * sqrt(length))`.
- * Segments with an unknown/zero length still get the minimum length so they
- * remain clickable.
+ * Draw length of a segment, **linear in sequence length**.
+ *
+ * Bandage draws a node's length in proportion to its bases, which is what makes
+ * a long contig read as a long sweeping ribbon and a collapsed repeat as a
+ * stub. A square-root mapping flattens that: a 32 kb contig and a 2.4 kb repeat
+ * end up nearly the same size on screen and the picture stops carrying the
+ * information people open a graph viewer to see.
+ *
+ * `perBase` comes from the graph (see `GraphModel.calibrate`) so the assembly
+ * fills a consistent area whatever its size.
  */
-export function drawLengthFor(bp, geom = DEFAULT_GEOM) {
+export function drawLengthFor(bp, geom = DEFAULT_GEOM, perBase = null) {
   const L = Number(bp);
   const safe = Number.isFinite(L) && L > 0 ? L : 1;
-  return clamp(geom.lengthScale * Math.sqrt(safe), geom.minLen, geom.maxLen);
+  const scale = perBase === null ? perBaseScaleFor(geom) : perBase;
+  return clamp(safe * scale * (geom.lengthScale || 1), geom.minLen, geom.maxLen);
 }
 
-/** Particle count for a polyline: `clamp(2, 12, round(drawLen / 25))`. */
+/** World units per base. Absolute, so it does not depend on the graph. */
+export function perBaseScaleFor(geom = DEFAULT_GEOM) {
+  return (geom.unitsPerMegabase || 1000) / 1e6;
+}
+
+/** Particle count for a polyline, so long ribbons bend smoothly. */
 export function particleCountFor(drawLen, geom = DEFAULT_GEOM) {
   const k = Math.round(drawLen / (geom.particleSpacing || 25));
   return clamp(k, geom.minParticles, geom.maxParticles);
@@ -115,6 +136,7 @@ export class GraphModel {
     /** @type {Array<string>} reference sequence names seen in ref_hits */
     this.references = [];
 
+    this.perBase = null;
     this.nParticles = 0;
     this.px = new Float32Array(0);
     this.py = new Float32Array(0);
@@ -150,6 +172,15 @@ export class GraphModel {
 
   get isEmpty() { return this.segments.length === 0; }
 
+  /** Re-map every segment's drawn length; used by the node-length slider. */
+  rescale(lengthScale) {
+    this.geom.lengthScale = Number(lengthScale) || 1;
+    for (const seg of this.segments) {
+      seg.drawLen = drawLengthFor(seg.length, this.geom, this.perBase);
+    }
+    this.revision++;
+  }
+
   /**
    * Rebuild the model from a `GET /api/graph` payload.
    * `keepPositions` re-uses the previous coordinates of segments with the same
@@ -158,6 +189,7 @@ export class GraphModel {
   setData(payload, { keepPositions = true } = {}) {
     const prev = keepPositions ? this._snapshotPositions() : null;
     const geom = this.geom;
+    this.perBase = perBaseScaleFor(geom);
 
     const rawSegs = (payload && Array.isArray(payload.segments)) ? payload.segments : [];
     const rawLinks = (payload && Array.isArray(payload.links)) ? payload.links : [];
@@ -171,7 +203,7 @@ export class GraphModel {
       const name = String(s.name !== undefined && s.name !== null ? s.name : 'seg_' + i);
       if (this.byName.has(name)) continue; // duplicate names would break lookups
       const length = Number.isFinite(Number(s.length)) ? Number(s.length) : 0;
-      const drawLen = drawLengthFor(length, geom);
+      const drawLen = drawLengthFor(length, geom, this.perBase);
       const k = particleCountFor(drawLen, geom);
       const depth = (s.depth === null || s.depth === undefined) ? null : Number(s.depth);
       const gc = (s.gc === null || s.gc === undefined) ? null : Number(s.gc);

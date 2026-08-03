@@ -168,19 +168,27 @@ class QuadTree {
 /*  Layout engine                                                          */
 /* ====================================================================== */
 
-/** Particle count the `repulsion` parameter is calibrated against. */
-export const REFERENCE_PARTICLES = 200;
+/** Segment count the `repulsion` parameter is calibrated against. */
+export const REFERENCE_SEGMENTS = 10;
 
 /**
- * How much to damp repulsion for a graph of `n` particles.
+ * How much to damp repulsion for a graph of `n` segments.
  *
- * Measured on real graphs: mean link length divided by mean segment length
- * should sit near 1-2. Without damping that ratio was 15 on a 514-segment
- * assembly and only 1.5 on a 10-segment one, for identical parameters.
+ * Repulsion accumulates over every particle while a particle's link forces do
+ * not, so one value cannot serve every graph: undamped, the setting that lays
+ * out a 10-segment graph turned a 514-segment one into a hairball with links
+ * fifteen times longer than the segments they join.
+ *
+ * This is keyed to the **segment** count rather than the particle count on
+ * purpose. Particles per segment is a rendering choice -- changing it should
+ * not silently change the physics, which is exactly what happened when the
+ * polyline resolution was reduced and repulsion jumped seventeen-fold.
  */
 export function repulsionScaleFor(n) {
-  if (!n || n <= REFERENCE_PARTICLES) return 1;
-  return Math.max(1e-4, Math.pow(REFERENCE_PARTICLES / n, 1.5));
+  if (!n || n <= REFERENCE_SEGMENTS) return 1;
+  // Square root, not 1.5: measured across a 10-segment and a 125-segment
+  // graph, a steeper law over-damped the large one or blew up the small one.
+  return Math.max(1e-3, Math.pow(REFERENCE_SEGMENTS / n, 0.5));
 }
 
 export const DEFAULT_PARAMS = Object.freeze({
@@ -188,10 +196,11 @@ export const DEFAULT_PARAMS = Object.freeze({
   // naturally claims more room. These values were tuned so a small bacterial
   // graph settles at roughly a few times its longest segment rather than
   // flinging its components kilometres apart.
-  repulsion: 0.3,
-  linkStrength: 0.55,
+  repulsion: 0.05,
+  linkStrength: 1.80,
   linkRest: 24,
-  bendStrength: 0.08,
+  // Keeps a long contig reading as a smooth sweep rather than a squiggle.
+  bendStrength: 0.90,
   gravity: 0.09,
   damping: 0.82,
   theta: 0.9,
@@ -236,7 +245,7 @@ export class LayoutEngine {
     let sum = 0;
     for (let i = 0; i < this.nSegments; i++) sum += this.segRest[i];
     this.unit = this.nSegments ? Math.max(4, sum / this.nSegments) : 25;
-    this.repulsionScale = repulsionScaleFor(this.nParticles);
+    this.repulsionScale = repulsionScaleFor(this.nSegments);
     this.ready = this.nParticles > 0;
     this.running = false;
     return this.ready;

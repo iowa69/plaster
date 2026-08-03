@@ -38,6 +38,7 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
   --sidebar-w: 336px;
   color-scheme: dark;
+  --node-outline: rgba(28,36,48,0.85);
 }
 
 /* An explicit data-theme on <html> always wins over the media query below. */
@@ -59,11 +60,12 @@
   --warn:         #a97400;
   --bad:          #c62d2d;
   --info:         #1f7fae;
-  --canvas-bg:    #fbfcfe;
+  --canvas-bg:    #ffffff;
   --canvas-grid:  #e6ebf2;
   --node-default: #5b6577;
   --link:         #9aa7b933;
-  --link-strong:  #7d8b9e;
+  --link-strong:  #4a5566;
+  --node-outline: rgba(10,16,24,0.88);
   --sel:          #d98800;
   --hover:        #000000;
   --shadow:       0 8px 24px rgba(20,30,45,.16);
@@ -89,16 +91,17 @@
     --warn:         #a97400;
     --bad:          #c62d2d;
     --info:         #1f7fae;
-    --canvas-bg:    #fbfcfe;
+    --canvas-bg:    #ffffff;
     --canvas-grid:  #e6ebf2;
     --node-default: #5b6577;
     --link:         #9aa7b933;
-    --link-strong:  #7d8b9e;
+    --link-strong:  #4a5566;
     --sel:          #d98800;
     --hover:        #000000;
     --shadow:       0 8px 24px rgba(20,30,45,.16);
     color-scheme: light;
-  }
+    --node-outline: rgba(4,8,14,0.9);
+}
 }
 
 /* ---------- base ---------- */

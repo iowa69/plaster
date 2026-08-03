@@ -86,6 +86,7 @@ export function readTheme() {
   const fallback = {
     canvasBg: '#0b0e13', grid: '#161c25', node: '#7f8ea3', link: '#5c6b82',
     sel: '#ffd166', text: '#dbe3ee', dim: '#8b97a8', faint: '#5f6b7c', accent: '#4f9cf9',
+    outline: 'rgba(28,36,48,0.85)',
   };
   try {
     const cs = getComputedStyle(document.documentElement);
@@ -100,6 +101,7 @@ export function readTheme() {
       dim: g('--text-dim', fallback.dim),
       faint: g('--text-faint', fallback.faint),
       accent: g('--accent', fallback.accent),
+      outline: g('--node-outline', fallback.outline),
     };
   } catch {
     return fallback;
@@ -184,6 +186,21 @@ export class ColourMapper {
       }
 
       case 'random': {
+        // One colour per node, seeded from its name so it is stable across
+        // reloads. This is Bandage's default and it is the most legible way to
+        // follow an individual contig through a tangle.
+        this.palette = graph.segments.map((s) => hashColour('seg:' + s.name, 58, 62));
+        if (!this.palette.length) this.palette = [theme.node];
+        for (const s of graph.segments) this.segPal[s.idx] = s.idx;
+        this.legend = {
+          type: 'none',
+          label: 'random per segment',
+          note: 'each contig gets its own colour, stable across reloads',
+        };
+        return this;
+      }
+
+      case 'randomComponent': {
         const comps = graph.components;
         this.palette = comps.map((c) => hashColour('comp:' + c.id));
         if (!this.palette.length) this.palette = [theme.node];
@@ -336,12 +353,15 @@ export class Renderer {
 
     this.opts = {
       showLinks: true,
-      showArrows: true,
-      showLabels: true,
-      showGrid: true,
+      showArrows: false,
+      showLabels: false,
+      showGrid: false,
       depthWidth: true,
       widthScale: 1,
-      baseWidth: 5,
+      // World units, constant like Bandage's node width. Paired with the
+      // absolute length scale this makes a short contig a stub and a long one
+      // a ribbon, at the same drawn size in any graph.
+      baseWidth: 5.5,
     };
 
     this.selected = new Set();   // segment indices
@@ -708,19 +728,37 @@ export class Renderer {
     }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (const key of keys) {
-      const arr = buckets[key];
-      const colIdx = Math.floor(key / WIDTH_BUCKETS);
-      const wIdx = key % WIDTH_BUCKETS;
-      ctx.strokeStyle = pal[colIdx] || th.node;
-      ctx.lineWidth = Math.max(0.7, Math.min(90, this.bucketWidth[wIdx] * scale));
-      ctx.beginPath();
-      for (const si of arr) {
-        this._segPath(ctx, si, g.segments[si].drawLen * scale > 30);
+
+    // Two passes per width bucket: a dark outline, then the coloured body on
+    // top. That is what gives a Bandage node its ribbon look and keeps
+    // neighbouring contigs of similar colour distinguishable.
+    const outline = o.outline !== false && this.opts.outlineNodes !== false;
+    for (const pass of outline ? [0, 1] : [1]) {
+      for (const key of keys) {
+        const arr = buckets[key];
+        const colIdx = Math.floor(key / WIDTH_BUCKETS);
+        const wIdx = key % WIDTH_BUCKETS;
+        // Keep a floor in *screen* pixels: zoomed out to fit a whole assembly
+        // a world-space width collapses to a hairline and the ribbons that
+        // carry the length information stop reading as ribbons at all.
+        const body = Math.max(2.4, Math.min(90, this.bucketWidth[wIdx] * scale));
+        if (pass === 0) {
+          // Skip the outline when the body is too thin for it to read.
+          if (body < 2.2) continue;
+          ctx.strokeStyle = th.outline || 'rgba(20,26,34,0.85)';
+          ctx.lineWidth = body + Math.min(2.6, Math.max(1, body * 0.28));
+        } else {
+          ctx.strokeStyle = pal[colIdx] || th.node;
+          ctx.lineWidth = body;
+        }
+        ctx.beginPath();
+        for (const si of arr) {
+          this._segPath(ctx, si, g.segments[si].drawLen * scale > 30);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
-      arr.length = 0;
     }
+    for (const key of keys) buckets[key].length = 0;
 
     /* ---- hover highlight ---- */
     if (o.interactive && this.hoverIdx >= 0 && this.hoverIdx < g.segments.length) {
