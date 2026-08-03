@@ -92,7 +92,23 @@ def apply_inferred_overlaps(graph: AssemblyGraph) -> int:
     if not overlap:
         return 0
 
+    # The sampled consensus is only a candidate. Apply it link by link, and only
+    # where the two sequences really do share those bases -- a graph where some
+    # joins overlap and others are blunt would otherwise have its blunt links
+    # given a phantom overlap, silently deleting real bases from every merge and
+    # scaffold through them.
+    applied = 0
     for key, link in list(graph.links.items()):
+        left = graph.segments.get(link.from_name)
+        right = graph.segments.get(link.to_name)
+        if left is None or right is None or not left.has_sequence or not right.has_sequence:
+            continue
+        a_seq = left.seq_oriented(link.from_orient)
+        b_seq = right.seq_oriented(link.to_orient)
+        if len(a_seq) < overlap or len(b_seq) < overlap:
+            continue
+        if a_seq[-overlap:] != b_seq[:overlap]:
+            continue
         graph.links[key] = Link(
             link.from_name,
             link.from_orient,
@@ -101,5 +117,13 @@ def apply_inferred_overlaps(graph: AssemblyGraph) -> int:
             overlap,
             f"{overlap}M",
         )
-    graph.overlap_default = overlap
+        applied += 1
+
+    if not applied:
+        return 0
+    # overlap_default is the fallback used when a walk step has no stored link,
+    # so only adopt it when the measured overlap describes most of the graph --
+    # not when a single coincidental match was the only thing verifiable.
+    if applied >= max(2, 0.5 * len(graph.links)):
+        graph.overlap_default = overlap
     return overlap

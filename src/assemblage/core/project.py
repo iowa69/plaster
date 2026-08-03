@@ -49,6 +49,8 @@ class Project:
     #: Treat reference sequences as circular, so a contig spanning the origin of
     #: a replicon is not reported as a relocation.
     circular_references: bool = True
+    #: Shortest run of Ns written for a gap. AGP forbids a zero-length gap.
+    min_gap: int = 100
     undo_stack: list[dict] = field(default_factory=list)
     layout: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -87,6 +89,12 @@ class Project:
         threads: int = 4,
     ) -> ReferenceReport:
         graph = self.require_graph()
+        if not os.path.exists(path):
+            raise AssemblageError(f"reference not found: {path}")
+        if os.path.isdir(path):
+            raise AssemblageError(f"{path} is a directory, not a reference FASTA")
+        if not os.access(path, os.R_OK):
+            raise AssemblageError(f"cannot read {path}: permission denied")
         if not any(s.has_sequence for s in graph.segments.values()):
             raise AssemblageError(
                 "this graph has no sequences, so it cannot be aligned to a reference"
@@ -225,6 +233,7 @@ class Project:
         threads: int = 4,
     ) -> ScaffoldPlan:
         graph = self.require_graph()
+        self.min_gap = max(1, int(min_gap))
         if method == "graph":
             self.plan = self._plan_from_graph()
             return self.plan
@@ -286,10 +295,14 @@ class Project:
         self.plan = plan
         return plan
 
-    def build(self, min_gap: int = 100) -> BuiltScaffolds:
+    def build(self, min_gap: int | None = None) -> BuiltScaffolds:
         if self.plan is None:
             raise AssemblageError("no scaffold plan has been built yet")
-        return build_scaffolds(self.require_graph(), self.plan, min_gap=min_gap)
+        return build_scaffolds(
+            self.require_graph(),
+            self.plan,
+            min_gap=max(1, self.min_gap if min_gap is None else min_gap),
+        )
 
     def preview(self) -> dict:
         built = self.build()
@@ -308,10 +321,38 @@ class Project:
 
     # -- export -------------------------------------------------------------
 
-    def export(self, outdir: str, what: list[str] | None = None) -> list[dict]:
+    def export(
+        self,
+        outdir: str,
+        what: list[str] | None = None,
+        overwrite: bool = True,
+    ) -> list[dict]:
+        """Write the requested artefacts into ``outdir``.
+
+        ``overwrite=False`` refuses rather than replacing an existing file. The
+        server passes False by default: an export is the one operation that can
+        destroy data the user did not create, and the directory is chosen by
+        whatever is driving the API.
+        """
         graph = self.require_graph()
         what = what or ["scaffolds", "agp", "gfa", "csv", "report"]
         os.makedirs(outdir, exist_ok=True)
+
+        if not overwrite:
+            names = {
+                "scaffolds": "scaffolds.fasta", "agp": "scaffolds.agp",
+                "gfa": "graph.gfa", "csv": "segments.csv",
+                "report": "report.html", "session": "session.json",
+            }
+            clashes = sorted(
+                names[k] for k in what
+                if k in names and os.path.exists(os.path.join(outdir, names[k]))
+            )
+            if clashes:
+                raise AssemblageError(
+                    f"{outdir} already contains {', '.join(clashes)}. "
+                    "Choose another directory, or pass overwrite to replace them."
+                )
         written: list[dict] = []
 
         def record(kind: str, path: str) -> None:
@@ -372,13 +413,18 @@ class Project:
 
         return written
 
-    def write_csv(self, path: str) -> None:
+    def write_csv(self, path) -> None:
+        """Write the per-segment table to a path or an open text handle."""
+        import contextlib
         import csv
+        import os as _os
 
         graph = self.require_graph()
         components = graph.component_map()
         placement = self.plan.member_index() if self.plan else {}
-        with open(path, "w", newline="") as fh:
+        opened = isinstance(path, (str, _os.PathLike))
+        handle = open(path, "w", newline="") if opened else path
+        with contextlib.nullcontext(handle) if not opened else handle as fh:
             writer = csv.writer(fh)
             writer.writerow(
                 [

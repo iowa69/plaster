@@ -362,3 +362,69 @@ def test_settings_may_be_passed_inline_when_aligning(client, demo_paths):
     settings = client.get("/api/status").json()["settings"]
     assert settings["circular_references"] is False
     assert settings["min_contig"] == 500
+
+
+# --------------------------------------------------------- error contract
+
+
+def test_every_error_carries_the_documented_error_key(client):
+    """docs/API.md promises {"error", "detail"} and the UI reads `error`.
+
+    FastAPI's default HTTPException body is {"detail": ...}, which made the UI
+    show a bare "HTTP 400" and demote the real message.
+    """
+    cases = [
+        client.get("/api/segment/nope"),
+        client.get("/api/download/bogus"),
+        client.post("/api/load", json={}),
+        client.post("/api/op", json={}),
+        client.post("/api/reference", json={"path": "/nope.fasta"}),
+        client.put("/api/scaffold", json={"plan": {"nope": 1}}),
+        client.post("/api/undo"),
+    ]
+    for r in cases:
+        body = r.json()
+        assert "error" in body, f"{r.url} returned {body}"
+        assert body["error"], f"{r.url} returned an empty error"
+        assert "detail" in body
+
+
+def test_foreseeable_io_failures_are_readable_errors_not_500s(client):
+    for r in (
+        client.post("/api/load-paths", json={"path": "/nope.paths"}),
+        client.post("/api/load", json={"path": "/tmp"}),
+        client.post("/api/reference", json={"path": "/tmp"}),
+    ):
+        assert r.status_code == 400, r.text
+        assert "error" in r.json()
+
+
+# ----------------------------------------------------------- export safety
+
+
+def test_export_refuses_to_overwrite_unless_asked(client, tmp_path):
+    client.post("/api/scaffold", json={"method": "graph"})
+    out = str(tmp_path / "out")
+
+    first = client.post("/api/export", json={"outdir": out, "what": ["csv"]})
+    assert first.status_code == 200
+
+    again = client.post("/api/export", json={"outdir": out, "what": ["csv"]})
+    assert again.status_code == 400
+    assert "already contains" in again.json()["error"]
+
+    forced = client.post(
+        "/api/export", json={"outdir": out, "what": ["csv"], "overwrite": True}
+    )
+    assert forced.status_code == 200
+
+
+def test_csv_download_leaves_no_temporary_file(client, tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    before = set(tmp_path.iterdir())
+    r = client.get("/api/download/csv")
+    assert r.status_code == 200
+    assert "name,length" in r.text
+    assert set(tmp_path.iterdir()) == before, "download left a temp file behind"

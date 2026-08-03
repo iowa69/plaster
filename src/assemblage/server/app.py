@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.analysis import search as search_mod
@@ -54,11 +54,32 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
     async def _general(_request: Request, exc: AssemblageError):
         return JSONResponse(status_code=400, content={"error": str(exc), "detail": ""})
 
+    @app.exception_handler(HTTPException)
+    async def _http_error(_request: Request, exc: HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            content = {"error": detail["error"], "detail": detail.get("detail", "")}
+        else:
+            content = {"error": str(detail), "detail": ""}
+        return JSONResponse(status_code=exc.status_code, content=content)
+
+    @app.exception_handler(Exception)
+    async def _unexpected(_request: Request, exc: Exception):
+        # An unhandled OSError would otherwise surface as a plain-text 500 that
+        # the UI shows as "HTTP 500 Internal Server Error".
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"{type(exc).__name__}: {exc}", "detail": "unexpected error"},
+        )
+
     def proj() -> Project:
         return app.state.project
 
     def fail(message: str, status: int = 400) -> None:
-        raise HTTPException(status_code=status, detail=message)
+        # docs/API.md promises {"error", "detail"} and the UI reads `error`.
+        # FastAPI's default HTTPException body is {"detail": ...}, which would
+        # demote the real message behind a bare "HTTP 400".
+        raise HTTPException(status_code=status, detail={"error": message, "detail": ""})
 
     # ---------------------------------------------------------------- status
 
@@ -341,13 +362,13 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         outdir = str(body.get("outdir") or "assemblage_out")
         what = body.get("what") or ["scaffolds", "agp", "gfa", "csv", "report"]
         with _lock:
-            written = proj().export(outdir, list(what))
+            written = proj().export(
+                outdir, list(what), overwrite=bool(body.get("overwrite", False))
+            )
         return {"written": written}
 
     @app.get("/api/download/{kind}")
     def download(kind: str):
-        import tempfile
-
         with _lock:
             p = proj()
             p.require_graph()
@@ -374,14 +395,11 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                 write_agp(buf, built.agp_rows, comments=built.warnings)
                 return _text_download(buf.getvalue(), "scaffolds.agp")
             if kind == "csv":
-                tmp = tempfile.NamedTemporaryFile(
-                    "w", suffix=".csv", delete=False, prefix="assemblage_"
-                )
-                tmp.close()
-                p.write_csv(tmp.name)
-                return FileResponse(
-                    tmp.name, filename="segments.csv", media_type="text/csv"
-                )
+                # Built in memory rather than via a temp file, which previously
+                # leaked one copy of the table into /tmp per download.
+                buf = io.StringIO()
+                p.write_csv(buf)
+                return _text_download(buf.getvalue(), "segments.csv", "text/csv")
             if kind == "report":
                 from ..core.report import build_report
 

@@ -178,6 +178,12 @@ def cmd_view(args) -> int:
     url = f"http://{args.host}:{args.port}"
     print(BANNER)
     print(f"  Assemblage is running at {url}")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print()
+        print(f"  !  Bound to {args.host}, so this is reachable from other machines.")
+        print("  !  There is no authentication: anyone who can reach this port can")
+        print("  !  browse your filesystem, read files, and write exports as you.")
+        print("  !  Use the default 127.0.0.1 unless you trust the whole network.")
     print("  press Ctrl+C to stop\n")
 
     if not args.no_browser:
@@ -229,6 +235,17 @@ def cmd_scaffold(args) -> int:
         if not project.alignments:
             print("  error: alignment produced no results", file=sys.stderr)
             return 1
+    elif args.reference:
+        # Graph scaffolding does not use the reference to order contigs, but
+        # aligning anyway lets --break-misassemblies work and fills in the QC
+        # section of the report. Silently ignoring -r would be worse.
+        _maybe_reference(project, args)
+    elif args.break_misassemblies:
+        print(
+            "  error: --break-misassemblies needs a reference; pass -r, or drop the flag",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.break_misassemblies and project.reference_report:
         before = project.reference_report.num_misassemblies
@@ -299,7 +316,9 @@ def cmd_search(args) -> int:
         min_identity=args.min_identity,
         threads=args.threads,
     )
-    print(f"  backend: {backend}; {len(hits)} hit(s)\n")
+    shown = min(len(hits), args.max_hits)
+    extra = "" if shown == len(hits) else f" (showing the top {shown})"
+    print(f"  backend: {backend}; {len(hits)} hit(s){extra}\n")
     print(f"  {'segment':<28}{'ident':>8}{'len':>9}{'start':>10}{'end':>10}{'strand':>8}")
     for hit in hits[: args.max_hits]:
         print(
@@ -537,8 +556,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_view = sub.add_parser("view", help="open the interactive studio in a browser")
     _add_common(p_view, assembly_required=False)
     _add_reference(p_view)
-    p_view.add_argument("--host", default="127.0.0.1")
-    p_view.add_argument("--port", type=int, default=8781)
+    p_view.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="address to bind. The default keeps the studio on this machine. "
+        "Binding elsewhere exposes an unauthenticated API that can read and "
+        "write files as you -- only do it on a network you trust",
+    )
+    p_view.add_argument("--port", type=int, default=8781, help="port to listen on")
     p_view.add_argument("--no-browser", action="store_true", help="do not open a browser")
     p_view.add_argument("--log-level", default="warning")
     p_view.set_defaults(func=cmd_view)
@@ -619,6 +644,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except AssemblageError as exc:
+        print(f"\nerror: {exc}\n", file=sys.stderr)
+        return 1
+    except (OSError, RuntimeError, ValueError) as exc:
+        # A missing reference, an unwritable output path or a failed aligner
+        # should read as an error, not as a stack trace.
         print(f"\nerror: {exc}\n", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

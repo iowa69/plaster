@@ -685,3 +685,70 @@ class TestOverlapInference:
         g.add_segment(Segment("b", None, length=500))
         g.add_link(Link("a", "+", "b", "+", 0, "*"))
         assert apply_inferred_overlaps(g) == 0
+
+
+class TestMixedOverlapGraphs:
+    """A measured overlap must be checked against each link, not stamped on all.
+
+    A graph where some joins overlap and others are blunt would otherwise have
+    its blunt links given a phantom overlap, silently deleting real bases from
+    every merge and scaffold through them.
+    """
+
+    @staticmethod
+    def _mixed(n_overlapping=20, n_blunt=6, overlap=55):
+        import random
+
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        rng = random.Random(5)
+        seq = lambda n: "".join(rng.choice("ACGT") for _ in range(n))  # noqa: E731
+        g = AssemblyGraph("mixed")
+        previous = None
+        for i in range(n_overlapping):
+            s = seq(400) if previous is None else previous[-overlap:] + seq(400 - overlap)
+            g.add_segment(Segment(f"o{i}", s))
+            if i:
+                g.add_link(Link(f"o{i - 1}", "+", f"o{i}", "+", 0, "*"))
+            previous = s
+        for i in range(n_blunt):
+            g.add_segment(Segment(f"b{i}", seq(400)))
+            if i:
+                g.add_link(Link(f"b{i - 1}", "+", f"b{i}", "+", 0, "*"))
+        return g
+
+    def test_only_the_links_that_really_overlap_get_the_overlap(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        g = self._mixed()
+        assert apply_inferred_overlaps(g) == 55
+        overlapping = [lk for k, lk in g.links.items() if k[0].startswith("o")]
+        blunt = [lk for k, lk in g.links.items() if k[0].startswith("b")]
+        assert {lk.overlap for lk in overlapping} == {55}
+        assert {lk.overlap for lk in blunt} == {0}
+
+    def test_walking_a_blunt_join_keeps_every_base(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        g = self._mixed()
+        apply_inferred_overlaps(g)
+        assert len(g.walk_sequence([("b0", "+"), ("b1", "+")])) == 800
+
+    def test_a_single_coincidental_match_does_not_become_the_default(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        # One measurable link among many that carry no sequence.
+        g = AssemblyGraph("sparse")
+        shared = "ACGTACGTACGTAC"  # 14 bp
+        g.add_segment(Segment("a", "TTTT" * 25 + shared))
+        g.add_segment(Segment("b", shared + "GGGG" * 25))
+        g.add_link(Link("a", "+", "b", "+", 0, "*"))
+        for i in range(20):
+            g.add_segment(Segment(f"n{i}", None, length=500))
+            if i:
+                g.add_link(Link(f"n{i - 1}", "+", f"n{i}", "+", 0, "*"))
+        apply_inferred_overlaps(g)
+        assert g.overlap_default == 0, (
+            "one verifiable link must not set the graph-wide fallback overlap"
+        )

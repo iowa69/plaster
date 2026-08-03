@@ -39,6 +39,10 @@ def load_graph(path: str | os.PathLike[str], fmt: str | None = None) -> Assembly
     """Load ``path``, sniffing the format unless ``fmt`` is given."""
     if not os.path.exists(path):
         raise AssemblageFormatError(f"file not found: {path}")
+    if os.path.isdir(path):
+        raise AssemblageFormatError(f"{path} is a directory, not an assembly file")
+    if not os.access(path, os.R_OK):
+        raise AssemblageFormatError(f"cannot read {path}: permission denied")
     detected = fmt or gfa_mod.detect_format(path)
     if detected == "gfa":
         return gfa_mod.read_gfa(path)
@@ -60,6 +64,8 @@ def load_spades_paths(graph: AssemblyGraph, path: str | os.PathLike[str]) -> int
     The file alternates a name line with a path line; a name ending in ``'``
     denotes the reverse-complement copy, which we skip since it is redundant.
     """
+    if not os.path.exists(path):
+        raise AssemblageFormatError(f"paths file not found: {path}")
     added = 0
     with open(path) as handle:
         lines = [ln.strip() for ln in handle if ln.strip()]

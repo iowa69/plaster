@@ -8,11 +8,7 @@ dependencies:
   # web service
   - fastapi>=0.110
   - uvicorn>=0.27
-  - python-multipart>=0.0.9
   - jinja2>=3.1
-  # analysis
-  - numpy>=1.24
-  - scipy>=1.10
   # alignment: mappy is the minimap2 Python binding; the CLI is a fallback
   - minimap2>=2.24
   - mappy>=2.24
@@ -20,5 +16,6 @@ dependencies:
   - blast>=2.13
   # tests
   - pytest>=7.4
+  - httpx>=0.26
   - pip:
-      - -e .
+      - .

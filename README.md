@@ -186,6 +186,29 @@ a single 5.26 Mb scaffold, and genome fraction went *up* from 98.57% to 99.57%
 
 ---
 
+## A note on running it
+
+`assemblage view` starts a small web server bound to `127.0.0.1`, so by default
+it is reachable only from your own machine. It is a desktop tool that happens to
+use a browser for its interface.
+
+It has **no authentication**, and by design it can read any file you can read —
+that is what makes the file picker work. So if you change `--host`, everyone who
+can reach that port gets a filesystem browser, a file reader, and the ability to
+write exports as you. On a shared machine or a cluster login node, don't. If you
+need the interface on a remote machine, forward the port over SSH instead:
+
+```bash
+ssh -L 8781:127.0.0.1:8781 you@remote     # then open http://127.0.0.1:8781
+```
+
+Assemblage prints a warning if you bind it anywhere other than loopback.
+
+Exports refuse to overwrite existing files unless you ask them to, since the
+output directory is the one place the tool can destroy work you did not create.
+
+---
+
 ## Input formats
 
 | Format | Notes |

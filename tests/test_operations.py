@@ -461,3 +461,93 @@ class TestSimplify:
         assert merged[0].sequence == TINY.walk_abc
         # D and R were not part of any chain.
         assert "D" in tiny_graph and "R" in tiny_graph
+
+
+class TestMergeSafety:
+    """merge_path must not fabricate joins or lose overlaps."""
+
+    @staticmethod
+    def _graph(overlap=55):
+        import random
+
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        rng = random.Random(4)
+        seq = lambda n: "".join(rng.choice("ACGT") for _ in range(n))  # noqa: E731
+        g = AssemblyGraph("m")
+        a = seq(500)
+        b = a[-overlap:] + seq(500 - overlap)
+        c = b[-overlap:] + seq(500 - overlap)
+        lonely = seq(400)
+        for name, s in (("a", a), ("b", b), ("c", c), ("lonely", lonely)):
+            g.add_segment(Segment(name, s))
+        g.add_link(Link("a", "+", "b", "+", overlap, f"{overlap}M"))
+        g.add_link(Link("b", "+", "c", "+", overlap, f"{overlap}M"))
+        g.overlap_default = overlap
+        return g
+
+    def test_merging_unconnected_segments_is_refused(self):
+        from assemblage.core.analysis.operations import merge_path
+        from assemblage.core.errors import GraphOperationError
+
+        g = self._graph()
+        # walk_sequence would fall back to overlap_default and silently delete
+        # 55 real bases from the second contig.
+        with pytest.raises(GraphOperationError, match="not connected"):
+            merge_path(g, [("a", "+"), ("lonely", "+")])
+
+    def test_a_boundary_link_keeps_its_overlap_after_a_merge(self):
+        from assemblage.core.analysis.operations import merge_path
+        from assemblage.core.model import Link, Segment
+
+        g = self._graph()
+        g.add_segment(Segment("d", "A" * 300))
+        g.add_link(Link("c", "+", "d", "+", 55, "55M"))
+        record = merge_path(g, [("a", "+"), ("b", "+")])
+        merged = record["new_name"]
+        onward = [lk for lk in g.links.values() if merged in (lk.from_name, lk.to_name)]
+        assert onward, "the merge dropped the boundary link entirely"
+        assert all(lk.overlap == 55 for lk in onward), (
+            "boundary link lost its overlap; the exported GFA would declare a "
+            "blunt join and later merges would duplicate bases"
+        )
+
+    def test_the_merged_sequence_is_the_walk_not_the_concatenation(self):
+        from assemblage.core.analysis.operations import merge_path
+
+        g = self._graph()
+        expected = g.walk_sequence([("a", "+"), ("b", "+"), ("c", "+")])
+        record = merge_path(g, [("a", "+"), ("b", "+"), ("c", "+")])
+        assert g.segments[record["new_name"]].sequence == expected
+        assert len(expected) == 3 * 500 - 2 * 55
+
+
+class TestReverseIsUndoable:
+    """undo after reverse was a silent no-op presented as success."""
+
+    @staticmethod
+    def _project():
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from assemblage.core.project import Project
+
+        g = AssemblyGraph("r")
+        g.add_segment(Segment("a", "AAAACCCGGGTTT"))
+        g.add_segment(Segment("b", "GGGGTTTTAAAA"))
+        g.add_link(Link("a", "+", "b", "+", 0, "*"))
+        p = Project()
+        p.graph = g
+        return p
+
+    def test_undo_restores_the_sequence_and_the_links(self):
+        p = self._project()
+        g = p.graph
+        before_seq = g.segments["a"].sequence
+        before_links = {lk.key() for lk in g.links.values()}
+
+        p.apply_operation("reverse", {"name": "a"})
+        assert g.segments["a"].sequence != before_seq
+
+        p.undo()
+        assert g.segments["a"].sequence == before_seq
+        assert {lk.key() for lk in g.links.values()} == before_links
+        assert p.undo_stack == []

@@ -158,7 +158,8 @@ def build_scaffolds(
                 # The walk was broken, so fall through and leave an honest gap
                 # rather than butting the two contigs together.
 
-            gap = max(int(member.gap_after), min_gap)
+            # AGP has no way to express a zero-length gap.
+            gap = max(int(member.gap_after), min_gap, 1)
             pieces.append("N" * gap)
             end = position + gap - 1
             known = member.gap_evidence in (GAP_REFERENCE, GAP_GRAPH)
