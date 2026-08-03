@@ -407,6 +407,19 @@ export function initScaffoldPanel(app) {
 
   /* ------------------------------------------------------------- edits */
 
+  /** Remove every placement of `name`, discarding any scaffold left empty.
+   *  A contig belongs in exactly one place. */
+  function dropSegmentFromScaffolds(plan, name) {
+    for (const scaffold of plan.scaffolds) {
+      for (let i = scaffold.members.length - 1; i >= 0; i--) {
+        if (scaffold.members[i].segment === name) scaffold.members.splice(i, 1);
+      }
+    }
+    for (let i = plan.scaffolds.length - 1; i >= 0; i--) {
+      if (!plan.scaffolds[i].members.length) plan.scaffolds.splice(i, 1);
+    }
+  }
+
   /** Move the dragged item into scaffold `dstS` at position `dstIndex`. */
   function moveInto(dstS, dstIndex) {
     const plan = ensurePlan();
@@ -418,6 +431,10 @@ export function initScaffoldPanel(app) {
       const name = dragSrc.name;
       const at = plan.unplaced.indexOf(name);
       if (at >= 0) plan.unplaced.splice(at, 1);
+      // With "include unplaced" on, the server also gives each unplaced contig
+      // its own singleton scaffold. Without this the contig ends up in two
+      // scaffolds and is written to the FASTA and AGP twice.
+      dropSegmentFromScaffolds(plan, name);
       member = { segment: name, orientation: '+', gap_after: 100, gap_evidence: 'manual' };
     } else {
       const src = plan.scaffolds[dragSrc.s];
@@ -428,8 +445,12 @@ export function initScaffoldPanel(app) {
       // Removing an earlier element in the same list shifts the target.
       if (dragSrc.s === dstS && dragSrc.m < dstIndex) dstIndex--;
     }
-    dstIndex = Math.max(0, Math.min(dst.members.length, dstIndex));
-    dst.members.splice(dstIndex, 0, member);
+    // dropSegmentFromScaffolds may have removed scaffolds, so re-find the
+    // destination by identity rather than trusting the old index.
+    const target = plan.scaffolds.includes(dst) ? dst : plan.scaffolds[dstS];
+    if (!target) { dragSrc = null; render(); return; }
+    dstIndex = Math.max(0, Math.min(target.members.length, dstIndex));
+    target.members.splice(dstIndex, 0, member);
     dragSrc = null;
     save();
   }

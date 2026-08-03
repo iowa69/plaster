@@ -402,7 +402,10 @@ details.sub > *:first-of-type:not(summary) { margin-top: 8px; }
 
 /* ---------- popover ---------- */
 .popover {
-  position: fixed; z-index: 60; width: 300px;
+  /* Anchored from JS against the button that opens it; these are the fallback
+     coordinates so it is on screen even if that never runs. */
+  position: fixed; top: 52px; right: 12px; z-index: 60; width: 300px;
+  max-height: calc(100vh - 72px); overflow-y: auto;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }

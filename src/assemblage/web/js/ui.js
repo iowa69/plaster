@@ -59,7 +59,7 @@ export function createApp() {
     const box = $('toasts');
     if (!box) return;
     const el = document.createElement('div');
-    el.className = `toast toast-${kind}`;
+    el.className = `toast ${kind}`;
     el.innerHTML = `<span>${esc(message)}</span><button class="toast-x" aria-label="dismiss">×</button>`;
     el.querySelector('.toast-x').addEventListener('click', () => el.remove());
     box.appendChild(el);
@@ -176,7 +176,7 @@ export function createApp() {
     await api.load(path, format || null);
     await app.refreshStatus();
     await app.reloadGraph({ relayout: true, keepPositions: false });
-    app.scaffoldPanel?.reset();
+    app.scaffoldPanel?.clear();
     clearReferenceResults();
     setStatus(`Loaded ${path}`);
     app.toast('Assembly loaded', 'ok');
@@ -354,7 +354,13 @@ export function createApp() {
       $('rr-status').textContent = info?.iter ? `Settled after ${fmtInt(info.iter)} iterations.` : '';
     },
     onError: (msg) => { setLayoutRunning(false); app.toast(String(msg), 'error'); },
-    onState: (state) => { $('status-layout').textContent = `layout: ${state}`; },
+    onState: (state) => {
+      const el = $('status-layout');
+      if (!el) return;
+      el.textContent = typeof state === 'boolean'
+        ? (state ? 'layout: running…' : 'layout: idle')
+        : `layout: ${state}`;
+    },
   });
 
   function setLayoutRunning(running) {
@@ -377,9 +383,14 @@ export function createApp() {
       return idx.length ? idx : null;
     }
     if (scope === 'component') {
-      const value = $('rr-component')?.value;
-      if (value === '' || value === undefined) return null;
-      return graph.segmentsInComponent(value).map((s) => s.idx);
+      const raw = $('rr-component')?.value;
+      if (raw === '' || raw === undefined || raw === null) return null;
+      // componentIndex is keyed by number; the select gives a string.
+      const id = Number.isNaN(Number(raw)) ? raw : Number(raw);
+      const members = graph.segmentsInComponent(id) || [];
+      const idx = members.map((s) => (typeof s === 'number' ? s : s.idx))
+        .filter((n) => Number.isFinite(n));
+      return idx.length ? idx : null;
     }
     return null;
   }
@@ -389,6 +400,10 @@ export function createApp() {
     const subset = subsetFor(scope);
     if (scope === 'selection' && !subset) {
       app.toast('Nothing is selected — select segments first, or choose "whole graph"', 'warn');
+      return;
+    }
+    if (scope === 'component' && !subset) {
+      app.toast('Pick a component first, or choose "whole graph"', 'warn');
       return;
     }
     const params = {
@@ -599,7 +614,8 @@ export function createApp() {
       `<svg viewBox="0 0 ${W} ${H}" role="img">` +
       `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H - padB}" stroke="currentColor" opacity="0.35"/>` +
       `<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="currentColor" opacity="0.35"/>` +
-      `<text x="${padL - 4}" y="${padT + 8}" text-anchor="end" font-size="8" fill="currentColor" opacity="0.7">${esc(fmtBp(yMax))}</text>` +
+      `<text x="${padL - 4}" y="${padT + 8}" text-anchor="end" font-size="8" fill="currentColor" opacity="0.7">` +
+      `${esc(kind === 'bars' ? fmtInt(yMax) : fmtBp(yMax))}</text>` +
       `<text x="${padL - 4}" y="${H - padB}" text-anchor="end" font-size="8" fill="currentColor" opacity="0.7">0</text>` +
       `<text x="${(W + padL) / 2}" y="${H - 4}" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.7">${esc(xLabel)}</text>` +
       d + '</svg>';
@@ -612,7 +628,7 @@ export function createApp() {
     await app.refreshStatus();
     await app.reloadGraph({ keepPositions: true });
     await app.loadReport();
-    app.scaffoldPanel?.reset();
+    app.scaffoldPanel?.clear();
     app.toast(`${op}: ${fmtInt(result.count)} change(s)`, 'ok');
     return result;
   });
@@ -725,8 +741,10 @@ export function createApp() {
     $('browse-title').textContent = title;
     $('modal-browse').hidden = false;
     $('browse-choose-dir').hidden = !chooseDir;
+    // Seeding with a directory that does not exist yet (the default output
+    // folder) would open the picker on a 404.
     const start = $(targetInputId)?.value || '';
-    await browseTo(start);
+    await browseTo(start.includes('/') ? start : '');
   };
 
   const closeBrowser = () => { $('modal-browse').hidden = true; };
@@ -824,7 +842,24 @@ export function createApp() {
 
     // Rearrange
     const pop = $('rearrange-pop');
-    const togglePop = (show) => { if (pop) pop.hidden = (show === undefined ? !pop.hidden : !show); };
+    /** Place the popover under the control that opened it, kept on screen. */
+    const anchorPop = () => {
+      const anchor = $('btn-rearrange-menu') || $('btn-rearrange');
+      if (!pop || !anchor) return;
+      const r = anchor.getBoundingClientRect();
+      const width = pop.offsetWidth || 300;
+      const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+      pop.style.left = `${left}px`;
+      pop.style.right = 'auto';
+      pop.style.top = `${Math.min(r.bottom + 6, window.innerHeight - 80)}px`;
+    };
+    const togglePop = (show) => {
+      if (!pop) return;
+      const next = show === undefined ? pop.hidden : show;
+      pop.hidden = !next;
+      if (next) anchorPop();
+    };
+    window.addEventListener('resize', () => { if (pop && !pop.hidden) anchorPop(); });
     on('btn-rearrange', 'click', () => startLayout({ mode: radio('rr-mode') || 'force', scope: radio('rr-scope') || 'all' }));
     on('btn-rearrange-menu', 'click', () => togglePop());
     on('rearrange-close', 'click', () => togglePop(false));
@@ -846,7 +881,9 @@ export function createApp() {
     on('btn-save-svg', 'click', () => app.saveSVG());
     on('btn-theme', 'click', () => {
       const root = document.documentElement;
-      const next = root.dataset.theme === 'light' ? 'dark' : 'light';
+      const current = root.dataset.theme
+        || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const next = current === 'dark' ? 'light' : 'dark';
       root.dataset.theme = next;
       try { localStorage.setItem('assemblage-theme', next); } catch { /* private mode */ }
       renderer.refreshTheme();
@@ -921,7 +958,7 @@ export function createApp() {
       await app.refreshStatus();
       await app.reloadGraph({ keepPositions: true });
       await app.loadReport();
-      app.scaffoldPanel?.reset();
+      app.scaffoldPanel?.clear();
       app.toast('Undone', 'ok', 2000);
     }));
 
@@ -956,10 +993,12 @@ export function createApp() {
 
     // Canvas interaction
     renderer.attach({
-      hover: (idx, seg) => {
+      // The renderer emits ('hover', segmentIndex, pointerEvent).
+      hover: (idx, event) => {
         const tip = $('hover-tip');
         if (!tip) return;
-        if (idx < 0 || !seg) { tip.hidden = true; return; }
+        const seg = idx >= 0 ? graph.segments[idx] : null;
+        if (!seg) { tip.hidden = true; return; }
         const hit = bestRefHit(seg.refHits);
         tip.innerHTML =
           `<strong>${esc(seg.name)}</strong><br>${esc(fmtBp(seg.length))}` +
@@ -967,14 +1006,19 @@ export function createApp() {
           (seg.gc !== null ? ` · GC ${fmtNum(seg.gc * 100, 1)}%` : '') +
           (hit ? `<br><span class="muted">${esc(hit.ref)} ${fmtInt(hit.r_st)}–${fmtInt(hit.r_en)}</span>` : '');
         tip.hidden = false;
+        if (event && typeof event.clientX === 'number') {
+          const stage = $('stage').getBoundingClientRect();
+          // Flip to the other side of the cursor near the right/bottom edge so
+          // the tip is never clipped away by the stage's overflow:hidden.
+          const x = event.clientX - stage.left;
+          const y = event.clientY - stage.top;
+          const w = tip.offsetWidth || 180;
+          const h = tip.offsetHeight || 48;
+          tip.style.left = `${Math.max(0, Math.min(x + 14, stage.width - w - 8))}px`;
+          tip.style.top = `${Math.max(0, Math.min(y + 14, stage.height - h - 8))}px`;
+        }
       },
-      hovermove: (x, y) => {
-        const tip = $('hover-tip');
-        if (!tip) return;
-        tip.style.left = `${x + 14}px`;
-        tip.style.top = `${y + 14}px`;
-      },
-      select: () => { updateCounts(); showSelectionDetail(); },
+      selection: () => { updateCounts(); showSelectionDetail(); },
       viewchange: () => {
         const z = $('status-zoom');
         if (z) z.textContent = `zoom ${(renderer.view.scale * 100).toFixed(0)}%`;
@@ -1005,6 +1049,12 @@ export function createApp() {
         case 'f': e.preventDefault(); renderer.fitToView(null); break;
         case '/': e.preventDefault(); $('search-query')?.focus(); break;
         case '?': e.preventDefault(); if ($('help-overlay')) $('help-overlay').hidden = false; break;
+        case 'a':
+          e.preventDefault();
+          renderer.selectAllVisible();
+          updateCounts();
+          showSelectionDetail();
+          break;
         case 'delete': case 'backspace': e.preventDefault(); $('op-delete')?.click(); break;
         default: break;
       }

@@ -730,3 +730,49 @@ class TestScaffoldReconstructsTheGenome:
         reversed_row = next(r for r in rows if r.component_id == "Rrc")
         assert reversed_row.component_beg == 1
         assert reversed_row.component_end == len(right) - overlap
+
+
+def test_a_contig_placed_twice_is_reported():
+    """An editing slip that places one contig in two scaffolds writes it twice.
+
+    A repeat legitimately recurs, so this is a warning rather than an error --
+    but it must not pass silently.
+    """
+    from assemblage.core.model import AssemblyGraph, Segment
+    from assemblage.core.scaffold.builder import build_scaffolds
+    from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+
+    g = AssemblyGraph("dup")
+    g.add_segment(Segment("a", "A" * 500))
+    g.add_segment(Segment("b", "C" * 500))
+    plan = ScaffoldPlan()
+    plan.scaffolds.append(
+        Scaffold(
+            name="s1",
+            members=[ScaffoldMember("a", gap_after=100), ScaffoldMember("b")],
+        )
+    )
+    plan.scaffolds.append(Scaffold(name="s2", members=[ScaffoldMember("a")]))
+
+    built = build_scaffolds(g, plan)
+    assert any("placed 2 times" in w and "a" in w for w in built.warnings)
+    # and it really is written twice, which is what the warning is about
+    assert sum(seq.count("A" * 500) for _n, seq in built.records) == 2
+
+
+def test_a_single_placement_produces_no_warning():
+    from assemblage.core.model import AssemblyGraph, Segment
+    from assemblage.core.scaffold.builder import build_scaffolds
+    from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+
+    g = AssemblyGraph("ok")
+    g.add_segment(Segment("a", "A" * 500))
+    g.add_segment(Segment("b", "C" * 500))
+    plan = ScaffoldPlan()
+    plan.scaffolds.append(
+        Scaffold(
+            name="s1",
+            members=[ScaffoldMember("a", gap_after=100), ScaffoldMember("b")],
+        )
+    )
+    assert build_scaffolds(g, plan).warnings == []

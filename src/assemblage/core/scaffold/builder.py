@@ -188,6 +188,7 @@ def build_scaffolds(
         out.agp_rows.extend(rows)
         out.total_length += len(sequence)
 
+    _warn_about_repeated_contigs(plan, out)
     _verify(out)
     return out
 
@@ -234,6 +235,27 @@ def _bridge_sequence_for(
     except Exception:
         return "", False
     return (seq or ""), True
+
+
+def _warn_about_repeated_contigs(plan: ScaffoldPlan, built: BuiltScaffolds) -> None:
+    """Flag any contig placed in more than one scaffold.
+
+    A repeat legitimately appears more than once -- that is what makes it a
+    repeat -- so this is a warning, not an error. But an editing slip that
+    places a contig twice writes it to the FASTA and AGP twice, and that is
+    worth saying out loud rather than leaving for the user to notice.
+    """
+    seen: dict[str, list[str]] = {}
+    for scaffold in plan.scaffolds:
+        for member in scaffold.members:
+            seen.setdefault(member.segment, []).append(scaffold.name)
+    for segment, places in sorted(seen.items()):
+        if len(places) > 1:
+            built.warnings.append(
+                f"{segment} is placed {len(places)} times ("
+                + ", ".join(sorted(set(places)))
+                + ") and is written to the output once per placement"
+            )
 
 
 def _verify(built: BuiltScaffolds) -> None:
