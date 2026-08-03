@@ -89,12 +89,6 @@ it when it looks right.
 Export the view as PNG or SVG, because figures are half of why people open a
 graph viewer.
 
-![Assemblage QC report](docs/images/report-example.png)
-
-*The HTML report for the demo dataset: headline statistics, Nx and cumulative
-curves, a to-scale reference ideogram with misassembly breakpoints flagged, and
-N50 before and after scaffolding.*
-
 ### Judges the assembly
 
 Reference-free: contigs, N50/L50, N75, NG50, auN, GC, depth distribution, dead
@@ -111,6 +105,12 @@ alone, that hides real structural error *and* inflates genome fraction, because
 the untouched span between alignment start and end counts as covered.
 Assemblage splits alignments at long indels before scoring, which is why its
 genome fraction is lower — and correct — compared to a naive PAF summary.
+
+![Assemblage QC report](docs/images/report-example.png)
+
+*The HTML report for the demo dataset: headline statistics, Nx and cumulative
+curves, a to-scale reference ideogram with misassembly breakpoints flagged, and
+N50 before and after scaffolding.*
 
 ### Fixes and scaffolds
 
@@ -148,8 +148,8 @@ mismatched AGP is worse than no AGP, because downstream tools trust it.
 
 Also exports the edited graph as GFA, a per-segment CSV (with reference
 placement and scaffold assignment columns, ready for R or pandas), a
-self-contained HTML report, and a session file so you can pick a analysis back
-up later.
+self-contained HTML report, and a session file so you can pick an analysis
+back up later.
 
 ---
 
