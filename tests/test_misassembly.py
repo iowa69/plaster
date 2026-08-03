@@ -113,7 +113,9 @@ class TestDemoGroundTruth:
 
     def test_genome_fraction(self, demo_report):
         # The contigs deliberately leave parts of the chromosome uncovered.
-        assert 80.0 < demo_report.genome_fraction < 84.0
+        # Only primary alignments count, matching QUAST's default handling of
+        # ambiguity, so the collapsed repeat covers one locus rather than three.
+        assert 78.0 < demo_report.genome_fraction < 81.0
         assert demo_report.reference_length == 169_000
         assert demo_report.reference_sequences == 2
         assert demo_report.covered_bases == pytest.approx(
@@ -375,3 +377,124 @@ class TestClassifyMisassemblies:
             ]
         )
         assert [e.contig for e in events] == ["a", "z"]
+
+
+class TestCircularReferences:
+    """Bacterial replicons are circular, and a contig spanning the origin is correct.
+
+    On a linear reading of the reference, such a contig looks like a jump of
+    nearly the whole replicon. Validation against a real closed Klebsiella
+    genome produced three of these false relocations -- one per replicon --
+    where QUAST reported none.
+    """
+
+    @staticmethod
+    def _block(q_st, q_en, r_st, r_en, ref="chr", strand=1, r_len=100_000):
+        from assemblage.core.analysis.align import Alignment
+
+        return Alignment(
+            query="c1", q_len=q_en, q_st=q_st, q_en=q_en, strand=strand,
+            ref=ref, r_len=r_len, r_st=r_st, r_en=r_en,
+            matches=q_en - q_st, block_len=q_en - q_st, mapq=60, nm=0,
+            is_primary=True,
+        )
+
+    def test_a_contig_spanning_the_origin_is_not_a_misassembly(self):
+        from assemblage.core.analysis.misassembly import classify_misassemblies
+
+        # Ends at the last base of a 100 kb replicon, resumes at base 0.
+        blocks = [
+            self._block(0, 40_000, 60_000, 100_000),
+            self._block(40_000, 55_000, 0, 15_000),
+        ]
+        assert classify_misassemblies(blocks) == []
+
+    def test_the_same_jump_is_a_relocation_on_a_linear_reference(self):
+        from assemblage.core.analysis.misassembly import RELOCATION, classify_misassemblies
+
+        blocks = [
+            self._block(0, 40_000, 60_000, 100_000),
+            self._block(40_000, 55_000, 0, 15_000),
+        ]
+        events = classify_misassemblies(blocks, circular_references=False)
+        assert [e.kind for e in events] == [RELOCATION]
+
+    def test_a_genuine_relocation_is_still_caught_on_a_circular_reference(self):
+        from assemblage.core.analysis.misassembly import RELOCATION, classify_misassemblies
+
+        # A 20 kb jump in the middle of a 100 kb replicon is nowhere near the
+        # origin, so circularity must not excuse it.
+        blocks = [
+            self._block(0, 10_000, 10_000, 20_000),
+            self._block(10_000, 20_000, 40_000, 50_000),
+        ]
+        events = classify_misassemblies(blocks)
+        assert [e.kind for e in events] == [RELOCATION]
+
+    def test_circular_distance_takes_the_short_way_round(self):
+        from assemblage.core.analysis.misassembly import circular_distance
+
+        assert circular_distance(-99_500, 100_000, True) == 500
+        assert circular_distance(-99_500, 100_000, False) == 99_500
+        assert circular_distance(500, 100_000, True) == 500
+        assert circular_distance(50_000, 100_000, True) == 50_000  # antipodal
+
+
+class TestSecondaryAlignmentsAreExcluded:
+    """Counting every placement of a repeat makes the assembly look bigger than it is.
+
+    Against a real assembly this pushed total aligned length above the assembly's
+    own length, which is impossible, and inflated the mismatch rate nine-fold.
+    """
+
+    @staticmethod
+    def _aln(query, q_st, q_en, r_st, r_en, primary, nm=0):
+        from assemblage.core.analysis.align import Alignment
+
+        return Alignment(
+            query=query, q_len=q_en, q_st=q_st, q_en=q_en, strand=1,
+            ref="chr", r_len=1_000_000, r_st=r_st, r_en=r_en,
+            matches=q_en - q_st, block_len=q_en - q_st, mapq=0, nm=nm,
+            is_primary=primary,
+        )
+
+    def test_total_aligned_length_never_exceeds_the_assembly(self):
+        from assemblage.core.analysis.misassembly import evaluate_against_reference
+
+        # One 5 kb repeat contig placed at three loci: one primary, two secondary.
+        alignments = [
+            self._aln("repeat", 0, 5_000, 10_000, 15_000, True),
+            self._aln("repeat", 0, 5_000, 300_000, 305_000, False),
+            self._aln("repeat", 0, 5_000, 700_000, 705_000, False),
+        ]
+        report = evaluate_against_reference(
+            alignments, {"chr": 1_000_000}, {"repeat": 5_000}
+        )
+        assert report.total_aligned_length == 5_000
+        assert report.covered_bases == 5_000
+
+    def test_secondary_hits_can_be_included_on_request(self):
+        from assemblage.core.analysis.misassembly import evaluate_against_reference
+
+        alignments = [
+            self._aln("repeat", 0, 5_000, 10_000, 15_000, True),
+            self._aln("repeat", 0, 5_000, 300_000, 305_000, False),
+        ]
+        report = evaluate_against_reference(
+            alignments, {"chr": 1_000_000}, {"repeat": 5_000}, primary_only=False
+        )
+        assert report.total_aligned_length == 10_000
+        assert report.covered_bases == 10_000
+
+    def test_secondary_hits_do_not_inflate_the_mismatch_rate(self):
+        from assemblage.core.analysis.misassembly import evaluate_against_reference
+
+        alignments = [
+            self._aln("repeat", 0, 10_000, 10_000, 20_000, True, nm=10),
+            self._aln("repeat", 0, 10_000, 300_000, 310_000, False, nm=90),
+        ]
+        report = evaluate_against_reference(
+            alignments, {"chr": 1_000_000}, {"repeat": 10_000}
+        )
+        assert report.total_mismatches == 10
+        assert report.mismatches_per_100kb == pytest.approx(100.0)

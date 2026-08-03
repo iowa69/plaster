@@ -75,6 +75,7 @@ class AssemblyMetrics:
     dead_ends: int = 0
     num_circular: int = 0
     mean_depth: float | None = None
+    median_depth: float | None = None
     depth_cv: float | None = None
     # plotting series
     nx_curve: list[tuple[float, int]] = field(default_factory=list)
@@ -93,6 +94,24 @@ def _median(values: Sequence[int]) -> int:
     if len(ordered) % 2:
         return ordered[mid]
     return (ordered[mid - 1] + ordered[mid]) // 2
+
+
+def _weighted_median_depth(segments: Sequence) -> float | None:
+    """Depth at which half the assembly's bases lie below."""
+    pairs = sorted(
+        (s.depth, s.length) for s in segments if s.depth is not None and s.length > 0
+    )
+    if not pairs:
+        return None
+    total = sum(length for _d, length in pairs)
+    if total <= 0:
+        return None
+    running = 0
+    for depth, length in pairs:
+        running += length
+        if running >= total / 2:
+            return float(depth)
+    return float(pairs[-1][0])
 
 
 def _nx_curve(lengths: Sequence[int], total: int | None = None, steps: int = 100):
@@ -206,19 +225,73 @@ def compute_metrics(
     if depths:
         mean = sum(depths) / len(depths)
         m.mean_depth = mean
+        # The length-weighted median is the useful headline: the depth at which
+        # half the assembly's *bases* sit below. A plain median over segments
+        # would be dominated by the many tiny nodes, and the mean is dragged up
+        # by collapsed repeats. This is the number Bandage reports.
+        m.median_depth = _weighted_median_depth(segments)
         if mean > 0 and len(depths) > 1:
             var = sum((d - mean) ** 2 for d in depths) / (len(depths) - 1)
             m.depth_cv = math.sqrt(var) / mean
 
-    m.num_links = graph.link_count
-    m.num_components = len(graph.connected_components())
-    m.dead_ends = graph.dead_end_count()
-    m.num_circular = sum(1 for n in graph.segments if graph.is_circular(n))
+    # Graph topology is reported for the same segments the length statistics
+    # describe. Reporting 63 contigs alongside 125 components would just look
+    # like a bug.
+    if min_length > 0:
+        kept = {s.name for s in segments}
+        links, components, dead_ends = _induced_topology(graph, kept)
+        m.num_links = links
+        m.num_components = components
+        m.dead_ends = dead_ends
+        m.num_circular = sum(1 for n in kept if graph.is_circular(n))
+    else:
+        m.num_links = graph.link_count
+        m.num_components = len(graph.connected_components())
+        m.dead_ends = graph.dead_end_count()
+        m.num_circular = sum(1 for n in graph.segments if graph.is_circular(n))
 
     m.nx_curve = _nx_curve(lengths)
     m.cumulative_curve = _cumulative(lengths)
     m.length_histogram = _histogram(lengths)
     return m
+
+
+def _induced_topology(graph: AssemblyGraph, kept: set[str]) -> tuple[int, int, int]:
+    """Links, components and dead ends of the subgraph spanned by ``kept``.
+
+    A link to a segment that was filtered out is not a connection any more, so
+    the end it sat on becomes a dead end.
+    """
+    adjacency: dict[str, set[str]] = {name: set() for name in kept}
+    ends: dict[str, list[int]] = {name: [0, 0] for name in kept}
+    links = 0
+    for link in graph.links.values():
+        if link.from_name not in kept or link.to_name not in kept:
+            continue
+        links += 1
+        adjacency[link.from_name].add(link.to_name)
+        adjacency[link.to_name].add(link.from_name)
+        tail, head = link.ends()
+        ends[tail[0]][1 if tail[1] == "end" else 0] += 1
+        ends[head[0]][1 if head[1] == "end" else 0] += 1
+
+    seen: set[str] = set()
+    components = 0
+    for start in kept:
+        if start in seen:
+            continue
+        components += 1
+        stack = [start]
+        seen.add(start)
+        while stack:
+            node = stack.pop()
+            for nb in adjacency[node]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+
+    dead_ends = sum((counts[0] == 0) + (counts[1] == 0) for counts in ends.values())
+    return links, components, dead_ends
 
 
 def compare_metrics(named: dict[str, AssemblyMetrics]) -> dict:

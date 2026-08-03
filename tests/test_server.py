@@ -125,7 +125,7 @@ def test_reference_alignment_and_report(client, demo_paths):
     )
     assert r.status_code == 200
     report = r.json()["report"]
-    assert 80 < report["genome_fraction"] < 84
+    assert 78 < report["genome_fraction"] < 81
     assert report["num_relocations"] == 1
     assert report["num_inversions"] == 1
     assert report["num_translocations"] == 1

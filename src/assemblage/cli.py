@@ -62,6 +62,8 @@ def _print_metrics(project: Project) -> None:
         rows.append(("NG50", _human(m.ng50)))
     if m.gc_percent is not None:
         rows.append(("GC", f"{m.gc_percent:.2f} %"))
+    if m.median_depth is not None:
+        rows.append(("median depth", f"{m.median_depth:.1f} x"))
     if m.mean_depth is not None:
         rows.append(("mean depth", f"{m.mean_depth:.1f} x"))
     rows += [
@@ -117,6 +119,9 @@ def _load(args) -> Project:
         print(f"  attached {added} path(s) from {args.paths}")
     if getattr(args, "genome_size", None):
         project.genome_size = args.genome_size
+    project.min_contig = int(getattr(args, "min_contig", 0) or 0)
+    project.circular_references = not getattr(args, "linear_references", False)
+    project.primary_only = not getattr(args, "count_ambiguous", False)
     summary = project.graph.summary() if project.graph else {}
     print(
         f"  loaded {args.assembly}: {summary.get('segments', 0):,} segments, "
@@ -158,6 +163,9 @@ def cmd_view(args) -> int:
             project.attach_paths(args.paths)
         if args.genome_size:
             project.genome_size = args.genome_size
+        project.min_contig = int(getattr(args, "min_contig", 0) or 0)
+        project.circular_references = not getattr(args, "linear_references", False)
+        project.primary_only = not getattr(args, "count_ambiguous", False)
         summary = project.graph.summary() if project.graph else {}
         print(
             f"  loaded {args.assembly}: {summary.get('segments', 0):,} segments, "
@@ -384,6 +392,7 @@ def cmd_compare(args) -> int:
         project.load(path)
         if args.genome_size:
             project.genome_size = args.genome_size
+        project.min_contig = int(getattr(args, "min_contig", 0) or 0)
         summary = project.graph.summary() if project.graph else {}
         print(
             f"  loaded {path}: {summary.get('segments', 0):,} segments, "
@@ -476,6 +485,26 @@ def _add_common(parser: argparse.ArgumentParser, assembly_required: bool = True)
     parser.add_argument("--format", choices=["gfa", "gfa2", "fastg", "fasta"], help="override format detection")
     parser.add_argument("--paths", help="SPAdes contigs.paths to attach")
     parser.add_argument("--genome-size", type=int, help="expected genome size, for NG50/NGA50")
+    parser.add_argument(
+        "--min-contig",
+        type=int,
+        default=0,
+        metavar="BP",
+        help="ignore segments shorter than this in the statistics "
+        "(default 0, count everything; use 500 to match QUAST)",
+    )
+    parser.add_argument(
+        "--linear-references",
+        action="store_true",
+        help="treat reference sequences as linear; by default they are assumed "
+        "circular, so a contig spanning a replicon's origin is not a misassembly",
+    )
+    parser.add_argument(
+        "--count-ambiguous",
+        action="store_true",
+        help="include secondary alignments in the statistics, so a repeat counts "
+        "at every place it maps (default: primary alignments only, as QUAST does)",
+    )
     parser.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
 
 
@@ -570,6 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("assemblies", nargs="+", help="two or more assemblies to compare")
     _add_reference(p_cmp)
     p_cmp.add_argument("--genome-size", type=int, help="expected genome size, for NG50/NGA50")
+    p_cmp.add_argument("--min-contig", type=int, default=0, metavar="BP",
+                       help="ignore segments shorter than this (use 500 to match QUAST)")
     p_cmp.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
     p_cmp.add_argument("--html", help="write a comparison report here")
     p_cmp.set_defaults(func=cmd_compare)

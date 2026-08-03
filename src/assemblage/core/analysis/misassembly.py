@@ -99,9 +99,24 @@ def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in out]
 
 
+def circular_distance(gap: int, ref_length: int, circular: bool) -> int:
+    """Distance between two reference points, going the short way round.
+
+    Bacterial chromosomes and plasmids are circular, and a contig that spans the
+    origin looks, on a linear reference, like a jump of nearly the whole
+    replicon. Measuring the distance around the circle turns that back into the
+    zero-length continuation it really is.
+    """
+    distance = abs(gap)
+    if circular and ref_length > 0:
+        distance = min(distance, abs(ref_length - distance))
+    return distance
+
+
 def classify_misassemblies(
     alignments: Sequence[Alignment],
     min_block: int = 200,
+    circular_references: bool = True,
 ) -> list[Misassembly]:
     """Find misassembly breakpoints within each contig.
 
@@ -183,7 +198,14 @@ def classify_misassemblies(
                 gap = right.r_st - left.r_en
             else:
                 gap = left.r_st - right.r_en
-            distance = abs(gap)
+            distance = circular_distance(
+                gap, max(left.r_len, right.r_len), circular_references
+            )
+            wrapped = circular_references and distance < abs(gap)
+            if wrapped and distance <= EXTENSIVE_THRESHOLD:
+                # A contig spanning the origin of a circular replicon is correct,
+                # not misassembled.
+                continue
             if distance > EXTENSIVE_THRESHOLD:
                 results.append(
                     Misassembly(
@@ -227,14 +249,28 @@ def evaluate_against_reference(
     contig_lengths: dict[str, int],
     genome_size: int | None = None,
     min_block: int = 200,
+    primary_only: bool = True,
+    circular_references: bool = True,
 ) -> ReferenceReport:
-    """Build the full reference-based report."""
+    """Build the full reference-based report.
+
+    ``primary_only`` excludes secondary alignments. A repeat that maps to five
+    places produces five alignments, and counting them all makes the assembly
+    look longer than it is -- total aligned length can even exceed the assembly
+    itself. Secondary hits are still worth keeping for the graph view, where
+    seeing every place a repeat lands is the point, so they are filtered here
+    rather than at alignment time.
+    """
     report = ReferenceReport()
     report.reference_length = sum(reference_lengths.values())
     report.reference_sequences = len(reference_lengths)
     genome = genome_size or report.reference_length
 
-    primary = [a for a in alignments if a.q_span >= min_block]
+    primary = [
+        a
+        for a in alignments
+        if a.q_span >= min_block and (a.is_primary or not primary_only)
+    ]
 
     # --- coverage of the reference ---
     per_ref: dict[str, list[tuple[int, int]]] = {}
@@ -305,7 +341,9 @@ def evaluate_against_reference(
         report.indels_per_100kb = 100_000.0 * total_indel / aligned_bases
 
     # --- misassemblies ---
-    events = classify_misassemblies(primary, min_block=min_block)
+    events = classify_misassemblies(
+        primary, min_block=min_block, circular_references=circular_references
+    )
     report.misassemblies = events
     report.num_relocations = sum(1 for e in events if e.kind == RELOCATION)
     report.num_inversions = sum(1 for e in events if e.kind == INVERSION)

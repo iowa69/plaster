@@ -268,3 +268,85 @@ class TestCompareMetrics:
         assert rows["Total length"] == ["1,000", "700"]
         # GC is unknown for sequence-free segments, so that row is dropped.
         assert "GC (%)" not in rows
+
+
+class TestWeightedMedianDepth:
+    """Median depth is length-weighted, which is what Bandage reports.
+
+    A plain median over segments is dominated by the many tiny nodes in a real
+    graph, and the mean is dragged upwards by collapsed repeats. Validated
+    against Bandage on two real assemblies (15.4764 and 49.5349).
+    """
+
+    @staticmethod
+    def _graph(pairs):
+        from assemblage.core.model import AssemblyGraph, Segment
+
+        g = AssemblyGraph("depth")
+        for i, (depth, length) in enumerate(pairs):
+            g.add_segment(Segment(f"s{i}", "A" * length, length, depth))
+        return g
+
+    def test_many_short_nodes_do_not_dominate(self):
+        from assemblage.core.analysis.metrics import compute_metrics
+
+        # Nine 100 bp nodes at 100x, one 100 kb node at 10x. Most *bases* are
+        # at 10x, so that is the median; a plain median over nodes would say 100.
+        pairs = [(100.0, 100)] * 9 + [(10.0, 100_000)]
+        m = compute_metrics(self._graph(pairs))
+        assert m.median_depth == 10.0
+        assert m.mean_depth == pytest.approx(91.0)
+
+    def test_a_single_segment_is_its_own_median(self):
+        from assemblage.core.analysis.metrics import compute_metrics
+
+        m = compute_metrics(self._graph([(33.5, 5000)]))
+        assert m.median_depth == 33.5
+
+    def test_no_depth_information_gives_none(self):
+        from assemblage.core.analysis.metrics import compute_metrics
+        from assemblage.core.model import AssemblyGraph, Segment
+
+        g = AssemblyGraph("nodepth")
+        g.add_segment(Segment("a", "ACGT" * 100))
+        m = compute_metrics(g)
+        assert m.median_depth is None
+        assert m.mean_depth is None
+
+
+class TestFilteredTopology:
+    """With --min-contig set, topology describes the same segments as the lengths.
+
+    Reporting 63 contigs next to 125 components reads as a bug.
+    """
+
+    @staticmethod
+    def _chain():
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        g = AssemblyGraph("chain")
+        # big -- tiny -- big : filtering the tiny node splits the component
+        g.add_segment(Segment("big1", "A" * 5000))
+        g.add_segment(Segment("tiny", "C" * 100))
+        g.add_segment(Segment("big2", "G" * 5000))
+        g.add_link(Link("big1", "+", "tiny", "+"))
+        g.add_link(Link("tiny", "+", "big2", "+"))
+        return g
+
+    def test_unfiltered_topology_covers_the_whole_graph(self):
+        from assemblage.core.analysis.metrics import compute_metrics
+
+        m = compute_metrics(self._chain())
+        assert m.num_contigs == 3
+        assert m.num_links == 2
+        assert m.num_components == 1
+        assert m.dead_ends == 2  # the two outer ends
+
+    def test_filtering_out_a_connector_splits_the_component(self):
+        from assemblage.core.analysis.metrics import compute_metrics
+
+        m = compute_metrics(self._chain(), min_length=1000)
+        assert m.num_contigs == 2
+        assert m.num_links == 0, "a link to a filtered-out segment is not a connection"
+        assert m.num_components == 2
+        assert m.dead_ends == 4  # both ends of both surviving segments

@@ -39,6 +39,16 @@ class Project:
     plan: ScaffoldPlan | None = None
     genome_size: int | None = None
     align_preset: str = align_mod.DEFAULT_PRESET
+    #: Segments shorter than this are excluded from statistics. Assemblage
+    #: counts everything by default, because in a graph a short segment is real
+    #: structure; QUAST's equivalent default is 500.
+    min_contig: int = 0
+    #: Exclude secondary alignments from the statistics (QUAST's default
+    #: handling of a repeat that maps to several places).
+    primary_only: bool = True
+    #: Treat reference sequences as circular, so a contig spanning the origin of
+    #: a replicon is not reported as a relocation.
+    circular_references: bool = True
     undo_stack: list[dict] = field(default_factory=list)
     layout: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -85,7 +95,7 @@ class Project:
             graph,
             path,
             preset=preset,
-            min_length=min_length,
+            min_length=max(min_length, self.min_contig),
             min_identity=min_identity,
             threads=threads,
         )
@@ -97,8 +107,14 @@ class Project:
         self.reference_report = misassembly_mod.evaluate_against_reference(
             alignments,
             self.reference_lengths,
-            {n: s.length for n, s in graph.segments.items()},
+            {
+                n: s.length
+                for n, s in graph.segments.items()
+                if s.length >= self.min_contig
+            },
             genome_size=self.genome_size,
+            primary_only=self.primary_only,
+            circular_references=self.circular_references,
         )
         return self.reference_report
 
@@ -122,7 +138,11 @@ class Project:
     # -- metrics ------------------------------------------------------------
 
     def metrics(self) -> AssemblyMetrics:
-        return compute_metrics(self.require_graph(), genome_size=self.effective_genome_size)
+        return compute_metrics(
+            self.require_graph(),
+            genome_size=self.effective_genome_size,
+            min_length=self.min_contig,
+        )
 
     @property
     def effective_genome_size(self) -> int | None:

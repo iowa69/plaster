@@ -153,6 +153,36 @@ back up later.
 
 ---
 
+## Is it right?
+
+Assemblage is checked against the tools it replaces, on real bacterial
+assemblies rather than on data it generated itself. Full numbers and commands
+are in [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
+**Against Bandage**, on two real graphs (2.88 Mb and 5.45 Mb, with 94 bp and
+127 bp overlaps): node count, edge count, total length, dead ends, connected
+components, N50, longest node, largest component and median depth all agree
+exactly.
+
+**Against QUAST**, on a closed *Klebsiella pneumoniae* reference: all nineteen
+shared statistics agree — N50, NG50, L50, auN, GC, genome fraction, duplication
+ratio, NA50, NGA50, total aligned length, mismatch and indel rates, misassembly
+counts, and unaligned contigs. Use `--min-contig 500` to match QUAST's default
+contig filter.
+
+That comparison found two real bugs, neither of which synthetic data exposed:
+contigs spanning a circular replicon's origin were being reported as
+relocations, and secondary alignments were inflating every reference statistic
+(total aligned length exceeded the assembly's own length). Both are fixed and
+covered by regression tests.
+
+**Scaffolding, scored by QUAST rather than by Assemblage:** 63 contigs became 5
+scaffolds, N50 rose from 444 kb to 5.26 Mb, the chromosome was reconstructed as
+a single 5.26 Mb scaffold, and genome fraction went *up* from 98.57% to 99.57%
+— with **zero misassemblies introduced** and no change in duplication ratio.
+
+---
+
 ## Input formats
 
 | Format | Notes |
