@@ -89,6 +89,12 @@ it when it looks right.
 Export the view as PNG or SVG, because figures are half of why people open a
 graph viewer.
 
+![Assemblage QC report](docs/images/report-example.png)
+
+*The HTML report for the demo dataset: headline statistics, Nx and cumulative
+curves, a to-scale reference ideogram with misassembly breakpoints flagged, and
+N50 before and after scaffolding.*
+
 ### Judges the assembly
 
 Reference-free: contigs, N50/L50, N75, NG50, auN, GC, depth distribution, dead
