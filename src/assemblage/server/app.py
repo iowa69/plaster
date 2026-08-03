@@ -69,6 +69,23 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         out["blast_available"] = search_mod.blast_available()
         return out
 
+    @app.post("/api/settings")
+    def settings(body: dict = Body(default={})) -> dict:
+        """Change the QC options that govern metrics and reference evaluation."""
+        body = body or {}
+        with _lock:
+            p = proj()
+            if "min_contig" in body:
+                p.min_contig = max(0, int(body.get("min_contig") or 0))
+            if "circular_references" in body:
+                p.circular_references = bool(body["circular_references"])
+            if "primary_only" in body:
+                p.primary_only = bool(body["primary_only"])
+            if "genome_size" in body:
+                value = body["genome_size"]
+                p.genome_size = int(value) if value else None
+            return _qc_settings(p)
+
     @app.post("/api/load")
     def load(body: dict = Body(...)) -> dict:
         path = (body or {}).get("path")
@@ -191,6 +208,14 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
             fail(f"reference not found: {path}")
         with _lock:
             p = proj()
+            # QC options are sticky: set once here, they also govern later
+            # re-alignments and the metrics endpoint.
+            if "min_contig" in body:
+                p.min_contig = max(0, int(body.get("min_contig") or 0))
+            if "circular_references" in body:
+                p.circular_references = bool(body["circular_references"])
+            if "primary_only" in body:
+                p.primary_only = bool(body["primary_only"])
             report = p.set_reference(
                 str(path),
                 preset=body.get("preset") or "asm10",
@@ -455,6 +480,15 @@ class _NoCacheStatic(StaticFiles):
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
+
+
+def _qc_settings(project: Project) -> dict:
+    return {
+        "min_contig": project.min_contig,
+        "circular_references": project.circular_references,
+        "primary_only": project.primary_only,
+        "genome_size": project.genome_size,
+    }
 
 
 def _text_download(text: str, filename: str, media_type: str = "text/plain"):

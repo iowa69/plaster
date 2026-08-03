@@ -22,10 +22,33 @@ The server holds exactly one project in memory.
   "has_plan": false,
   "align_backend": "mappy",
   "blast_available": true,
-  "undo_depth": 0
+  "undo_depth": 0,
+  "settings": {"min_contig": 0, "circular_references": true,
+               "primary_only": true, "genome_size": null}
 }
 ```
 `reference` is `null` when none is loaded.
+
+---
+
+## `POST /api/settings`
+Change the options that govern metrics and reference evaluation. Any subset may
+be given; unlisted keys are left alone. Returns the settings now in effect.
+
+```json
+{"min_contig": 500, "circular_references": true, "primary_only": true,
+ "genome_size": null}
+```
+
+| key | default | meaning |
+|---|---|---|
+| `min_contig` | `0` | ignore segments shorter than this in the statistics (500 matches QUAST) |
+| `circular_references` | `true` | treat reference sequences as circular, so a contig spanning a replicon's origin is not a relocation |
+| `primary_only` | `true` | exclude secondary alignments from the statistics, as QUAST does |
+| `genome_size` | `null` | expected genome size for NG50/NGA50; falls back to the reference length |
+
+These are also reported under `settings` in `GET /api/status`, and may be passed
+in the body of `POST /api/reference` to set them at the same time as aligning.
 
 ---
 

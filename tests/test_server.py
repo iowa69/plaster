@@ -298,3 +298,67 @@ def test_search_finds_a_segment_by_its_own_sequence(client, demo_paths):
 def test_search_rejects_junk(client):
     r = client.post("/api/search", json={"query": "this is not a sequence!!"})
     assert r.status_code == 400
+
+
+# -------------------------------------------------------------------- settings
+
+
+def test_status_reports_the_qc_settings(client):
+    settings = client.get("/api/status").json()["settings"]
+    assert settings == {
+        "min_contig": 0,
+        "circular_references": True,
+        "primary_only": True,
+        "genome_size": None,
+    }
+
+
+def test_settings_can_be_changed_and_are_returned(client):
+    r = client.post("/api/settings", json={"min_contig": 500, "primary_only": False})
+    assert r.status_code == 200
+    assert r.json()["min_contig"] == 500
+    assert r.json()["primary_only"] is False
+    # unlisted keys are left alone
+    assert r.json()["circular_references"] is True
+    assert client.get("/api/status").json()["settings"]["min_contig"] == 500
+
+
+def test_min_contig_is_honoured_by_the_report(client):
+    before = client.get("/api/report").json()["metrics"]["num_contigs"]
+    client.post("/api/settings", json={"min_contig": 5_000})
+    after = client.get("/api/report").json()["metrics"]["num_contigs"]
+    assert after < before, "min_contig did not filter the statistics"
+
+
+def test_settings_accepts_an_empty_body(client):
+    r = client.post("/api/settings", json={})
+    assert r.status_code == 200
+    assert r.json()["min_contig"] == 0
+
+
+def test_a_negative_min_contig_is_clamped(client):
+    assert client.post("/api/settings", json={"min_contig": -10}).json()["min_contig"] == 0
+
+
+def test_genome_size_can_be_cleared(client):
+    client.post("/api/settings", json={"genome_size": 5_000_000})
+    assert client.get("/api/status").json()["settings"]["genome_size"] == 5_000_000
+    client.post("/api/settings", json={"genome_size": None})
+    assert client.get("/api/status").json()["settings"]["genome_size"] is None
+
+
+@requires_aligner
+def test_settings_may_be_passed_inline_when_aligning(client, demo_paths):
+    r = client.post(
+        "/api/reference",
+        json={
+            "path": str(demo_paths["reference"]),
+            "preset": "asm5",
+            "circular_references": False,
+            "min_contig": 500,
+        },
+    )
+    assert r.status_code == 200
+    settings = client.get("/api/status").json()["settings"]
+    assert settings["circular_references"] is False
+    assert settings["min_contig"] == 500

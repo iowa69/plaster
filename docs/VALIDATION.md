@@ -258,7 +258,7 @@ Rendering that graph costs 0.7 ms per frame.
 
 ## Test suite
 
-396 tests, running in under 3 seconds:
+403 tests, running in under 3 seconds:
 
 ```bash
 conda activate assemblage

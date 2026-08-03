@@ -461,4 +461,10 @@ class Project:
             "has_plan": self.plan is not None,
             "align_backend": align_mod.alignment_backend(),
             "undo_depth": len(self.undo_stack),
+            "settings": {
+                "min_contig": self.min_contig,
+                "circular_references": self.circular_references,
+                "primary_only": self.primary_only,
+                "genome_size": self.genome_size,
+            },
         }
