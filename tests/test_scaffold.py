@@ -616,3 +616,117 @@ class TestStaleBridges:
                 assert piece == graph[row.component_id].seq_oriented(row.orientation)
             cursor = row.object_end + 1
         assert cursor - 1 == len(sequence)
+
+
+class TestScaffoldReconstructsTheGenome:
+    """The test that matters: does the exported sequence equal the truth?
+
+    Checking that the AGP agrees with the FASTA is necessary but not sufficient
+    -- both are generated from one coordinate counter, so they agree even when
+    the sequence is wrong. This suite once passed while every graph-closed gap
+    duplicated the link's overlap, making the scaffold k-1 bases too long per
+    join on exactly the SPAdes/Unicycler graphs the tool targets.
+    """
+
+    @staticmethod
+    def _cut_genome(overlap, seed=3, length=3000, cuts=(0, 800, 1500, 2300)):
+        """A known genome cut into pieces that share `overlap` bases, as a k-mer
+        assembler emits them."""
+        import random
+
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        rng = random.Random(seed)
+        genome = "".join(rng.choice("ACGT") for _ in range(length))
+        bounds = [*cuts, length]
+        g = AssemblyGraph("cut")
+        for i in range(len(bounds) - 1):
+            start = bounds[i]
+            end = bounds[i + 1] + (overlap if i < len(bounds) - 2 else 0)
+            g.add_segment(Segment(f"s{i}", genome[start:end]))
+            if i:
+                g.add_link(
+                    Link(f"s{i - 1}", "+", f"s{i}", "+", overlap,
+                         f"{overlap}M" if overlap else "*")
+                )
+        return genome, g
+
+    def _scaffold(self, graph):
+        from assemblage.core.project import Project
+        from assemblage.core.scaffold.builder import build_scaffolds
+
+        p = Project()
+        p.graph = graph
+        p.build_plan(method="graph")
+        built = build_scaffolds(graph, p.plan)
+        return built, max((s for _n, s in built.records), key=len)
+
+    @pytest.mark.parametrize("overlap", [0, 21, 55, 127])
+    def test_the_scaffold_equals_the_genome_it_came_from(self, overlap):
+        genome, graph = self._cut_genome(overlap)
+        built, scaffold = self._scaffold(graph)
+        assert built.warnings == []
+        assert len(scaffold) == len(genome), (
+            f"scaffold is {len(scaffold) - len(genome):+d} bp off the truth; "
+            f"3 joins x {overlap} bp overlap"
+        )
+        assert scaffold == genome
+
+    def test_a_bridged_gap_and_a_reversed_member_still_reconstruct_the_genome(self):
+        import random
+
+        from assemblage.core.io.agp import GAP_KNOWN, GAP_UNKNOWN
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from assemblage.core.scaffold.builder import build_scaffolds
+        from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+        from assemblage.core.sequence import revcomp
+
+        rng = random.Random(9)
+        overlap = 40
+        genome = "".join(rng.choice("ACGT") for _ in range(2000))
+        left, middle, right = (
+            genome[0 : 800 + overlap],
+            genome[800 : 1400 + overlap],
+            genome[1400:2000],
+        )
+        g = AssemblyGraph("bridge")
+        g.add_segment(Segment("L", left))
+        g.add_segment(Segment("M", middle))
+        g.add_segment(Segment("Rrc", revcomp(right)))  # stored on the other strand
+        g.add_link(Link("L", "+", "M", "+", overlap, f"{overlap}M"))
+        g.add_link(Link("M", "+", "Rrc", "-", overlap, f"{overlap}M"))
+
+        plan = ScaffoldPlan(method="manual")
+        plan.scaffolds.append(
+            Scaffold(
+                name="s1",
+                members=[
+                    ScaffoldMember("L", "+", gap_after=0, bridge_path=[("M", "+")]),
+                    ScaffoldMember("Rrc", "-"),
+                ],
+            )
+        )
+        built = build_scaffolds(g, plan)
+        scaffold = dict(built.records)["s1"]
+        assert built.warnings == []
+        assert scaffold == genome
+
+        # The AGP must describe the trimmed component, in original contig
+        # coordinates -- a reversed member is trimmed at its *end*.
+        rows = sorted(built.agp_rows, key=lambda r: r.part_number)
+        cursor = 1
+        for row in rows:
+            assert row.object_beg == cursor
+            piece = scaffold[row.object_beg - 1 : row.object_end]
+            if row.component_type in (GAP_KNOWN, GAP_UNKNOWN):
+                assert set(piece) == {"N"}
+            elif row.component_id in g.segments:
+                source = g.segments[row.component_id].sequence
+                span = source[row.component_beg - 1 : row.component_end]
+                assert piece == (revcomp(span) if row.orientation == "-" else span)
+            cursor = row.object_end + 1
+        assert cursor - 1 == len(scaffold)
+
+        reversed_row = next(r for r in rows if r.component_id == "Rrc")
+        assert reversed_row.component_beg == 1
+        assert reversed_row.component_end == len(right) - overlap

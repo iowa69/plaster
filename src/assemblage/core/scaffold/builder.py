@@ -57,31 +57,57 @@ def build_scaffolds(
         if not members:
             continue
 
+        # Bases this member shares with whatever precedes it in the scaffold.
+        # A graph join means the two pieces genuinely overlap by the link's
+        # length, so writing both in full would duplicate those bases -- k-1 of
+        # them at every closed gap, on exactly the k-mer graphs this tool
+        # targets. The preceding piece is written whole and the overlap is
+        # trimmed from the front of this one.
+        lead_trim = 0
+
         for index, member in enumerate(members):
             segment = graph.segments[member.segment]
-            if not segment.has_sequence:
+            if segment.sequence is None:
                 raise GraphOperationError(
                     f"segment {member.segment!r} has no sequence, so it cannot be "
                     "written to a scaffold. Load a graph that includes sequences."
                 )
-            seq = segment.seq_oriented(member.orientation)
-            pieces.append(seq)
-            end = position + len(seq) - 1
-            rows.append(
-                AgpRow(
-                    object_name=scaffold.name,
-                    object_beg=position,
-                    object_end=end,
-                    part_number=part,
-                    component_type=COMPONENT_CONTIG,
-                    component_id=member.segment,
-                    component_beg=1,
-                    component_end=len(seq),
-                    orientation=member.orientation,
+            full = segment.seq_oriented(member.orientation)
+            trim = min(lead_trim, len(full))
+            if lead_trim > len(full):
+                out.warnings.append(
+                    f"{scaffold.name}: {member.segment} is shorter than its "
+                    f"{lead_trim} bp overlap with the previous piece and was "
+                    "truncated to nothing"
                 )
-            )
-            position = end + 1
-            part += 1
+            seq = full[trim:]
+            lead_trim = 0
+
+            if seq:
+                pieces.append(seq)
+                end = position + len(seq) - 1
+                # AGP describes the part of the component that was used. Trimming
+                # the front of the oriented sequence is the *back* of the contig
+                # when the member is reverse-complemented.
+                if member.orientation == "-":
+                    comp_beg, comp_end = 1, len(full) - trim
+                else:
+                    comp_beg, comp_end = trim + 1, len(full)
+                rows.append(
+                    AgpRow(
+                        object_name=scaffold.name,
+                        object_beg=position,
+                        object_end=end,
+                        part_number=part,
+                        component_type=COMPONENT_CONTIG,
+                        component_id=member.segment,
+                        component_beg=comp_beg,
+                        component_end=comp_end,
+                        orientation=member.orientation,
+                    )
+                )
+                position = end + 1
+                part += 1
 
             if index == len(members) - 1:
                 break
@@ -116,7 +142,18 @@ def build_scaffolds(
                     position = end + 1
                     part += 1
                 if joined_by_graph:
-                    # Either bridged, or genuinely adjacent: no gap belongs here.
+                    # Either bridged, or genuinely adjacent: no gap belongs here,
+                    # but the next member must give up the bases it shares with
+                    # the piece just written.
+                    tail = (
+                        member.bridge_path[-1]
+                        if member.bridge_path
+                        else (member.segment, member.orientation)
+                    )
+                    nxt = members[index + 1]
+                    lead_trim = graph.overlap_between(
+                        tail[0], tail[1], nxt.segment, nxt.orientation
+                    )
                     continue
                 # The walk was broken, so fall through and leave an honest gap
                 # rather than butting the two contigs together.

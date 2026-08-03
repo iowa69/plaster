@@ -26,7 +26,16 @@ def delete_segments(graph: AssemblyGraph, names: Sequence[str]) -> dict:
 
 
 def restore(graph: AssemblyGraph, record: dict) -> None:
-    """Undo a :func:`delete_segments` or split by putting things back."""
+    """Undo an operation, given the record it returned."""
+    # Reversing is its own inverse, and it edits a segment in place rather than
+    # removing anything -- so it needs handling of its own, or undo silently
+    # does nothing and the edit is presented as reversible when it is not.
+    if record.get("kind") == "reverse_segment":
+        name = record.get("name")
+        if name in graph.segments:
+            reverse_segment(graph, name)
+        return
+
     for segment in record.get("segments", []):
         graph.add_segment(segment, replace=True)
     for link in record.get("links", []):
@@ -197,6 +206,17 @@ def merge_path(graph: AssemblyGraph, steps: Sequence[tuple[str, str]], new_name:
     if missing:
         raise GraphOperationError(f"unknown segment(s): {', '.join(missing)}")
 
+    # Every consecutive pair must actually be linked. walk_sequence falls back
+    # to the graph's default overlap when it finds no link, so merging two
+    # unconnected contigs would silently delete k-1 real bases from the second.
+    for (a_name, a_or), (b_name, b_or) in zip(steps, steps[1:]):
+        if not graph.has_link(a_name, a_or, b_name, b_or):
+            raise GraphOperationError(
+                f"{a_name}{a_or} and {b_name}{b_or} are not connected in the graph, "
+                "so they cannot be merged. Use scaffolding to join contigs that the "
+                "assembly does not link."
+            )
+
     sequence = graph.walk_sequence(steps)
     lengths = [graph.segments[n].length for n in names]
     depths = [graph.segments[n].depth for n in names]
@@ -211,13 +231,19 @@ def merge_path(graph: AssemblyGraph, steps: Sequence[tuple[str, str]], new_name:
     # Remember what the outside world was attached to before we delete anything.
     head, head_orient = steps[0]
     tail, tail_orient = steps[-1]
+    # Keep each boundary link's overlap: rebuilding them with the Link defaults
+    # would declare blunt joins where the assembler declared an overlap, and the
+    # next merge or scaffold through that link would duplicate k-1 bases.
+    inside = set(names)
     incoming = [
-        (n, o)
+        (n, o, graph.overlap_between(n, o, head, head_orient))
         for n, o in graph.predecessors(head, head_orient)
-        if n not in set(names)
+        if n not in inside
     ]
     outgoing = [
-        (n, o) for n, o in graph.successors(tail, tail_orient) if n not in set(names)
+        (n, o, graph.overlap_between(tail, tail_orient, n, o))
+        for n, o in graph.successors(tail, tail_orient)
+        if n not in inside
     ]
 
     inverse = graph.remove_segments(names)
@@ -227,10 +253,14 @@ def merge_path(graph: AssemblyGraph, steps: Sequence[tuple[str, str]], new_name:
     graph.add_segment(
         Segment(merged_name, sequence, len(sequence), depth), replace=True
     )
-    for name, orient in incoming:
-        graph.add_link(Link(name, orient, merged_name, "+"))
-    for name, orient in outgoing:
-        graph.add_link(Link(merged_name, "+", name, orient))
+    for name, orient, overlap in incoming:
+        graph.add_link(
+            Link(name, orient, merged_name, "+", overlap, f"{overlap}M" if overlap else "*")
+        )
+    for name, orient, overlap in outgoing:
+        graph.add_link(
+            Link(merged_name, "+", name, orient, overlap, f"{overlap}M" if overlap else "*")
+        )
 
     return {
         "kind": "merge_path",

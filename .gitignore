@@ -19,3 +19,9 @@ assemblage_out/
 
 # browser-automation artefacts from verification runs
 .playwright-mcp/
+
+# stray screenshots from browser verification runs
+/*.png
+
+# editor/agent local settings
+.claude/
