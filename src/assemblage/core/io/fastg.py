@@ -86,4 +86,9 @@ def read_fastg(path: str | os.PathLike[str]) -> AssemblyGraph:
     for (a_base, a_or), (b_base, b_or) in edges:
         graph.add_link(Link(a_base, a_or, b_base, b_or, 0, "*"))
 
+    # FASTG has no field for the overlap, but SPAdes edges really do overlap by
+    # k-1 bases. Measure it, or every merge through a link duplicates them.
+    from .overlaps import apply_inferred_overlaps
+
+    apply_inferred_overlaps(graph)
     return graph

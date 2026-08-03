@@ -154,6 +154,34 @@ play, where the bridging sequence must be overlap-trimmed to be correct.
 
 ---
 
+## Robustness across real files
+
+Every assembly graph on the development machine -- 251 files spanning SPAdes
+GFA and FASTG, Unicycler intermediate and final graphs, and the author's own
+assembler, at every *k* from 27 to 127 -- loads without error, in 2.2 s in
+total.
+
+### A third bug this found
+
+**FASTG links were treated as blunt joins.** FASTG has no field for the overlap,
+so the parser recorded zero, but SPAdes FASTG edges really do overlap by *k*-1
+bases -- the same overlap the GFA writes as `127M`. Any merge or scaffold built
+through such a link therefore duplicated the shared bases: merging two 128 bp
+edges produced 256 bp where the correct answer is 129 bp. This was silent
+corruption of exported sequence, and it would have hit anyone loading SPAdes
+FASTG.
+
+Overlaps are now measured when the file does not state them, by finding the
+longest exact suffix/prefix match across a sample of links and requiring a
+consensus. Explicit CIGARs are never overridden, and a graph of genuinely blunt
+joins produces no consensus and is left alone.
+
+Across those 251 files the measured overlaps come out as 27, 53, 55, 71, 77, 87,
+94, 99, 111, 119 and 127 -- exactly the *k*-1 values the assemblers used -- with
+17 files correctly identified as blunt.
+
+---
+
 ## Scale
 
 A synthetic 20,000-segment graph (21,076 links, 11.8 Mb):

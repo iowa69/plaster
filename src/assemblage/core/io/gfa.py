@@ -231,6 +231,11 @@ def read_gfa(path: str | os.PathLike[str], strict: bool = False) -> AssemblyGrap
             counts[ov] = counts.get(ov, 0) + 1
         graph.overlap_default = max(counts, key=lambda k: counts[k])
 
+    # Some writers emit '*' for every link even though the segments do overlap.
+    # This is a no-op when the CIGARs were present or the joins really are blunt.
+    from .overlaps import apply_inferred_overlaps
+
+    apply_inferred_overlaps(graph)
     return graph
 
 

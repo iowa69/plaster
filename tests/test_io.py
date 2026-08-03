@@ -590,3 +590,98 @@ class TestLoader:
     def test_explicit_format_overrides_sniffing(self, demo_paths):
         graph = load_graph(str(demo_paths["contigs"]), fmt="fasta")
         assert graph.source_format == "fasta"
+
+
+class TestOverlapInference:
+    """FASTG states no overlap, but SPAdes edges really do overlap by k-1 bases.
+
+    Taking them as blunt joins silently corrupts every merge and every scaffold
+    built through such a link: the shared bases appear twice. Validated against
+    a real SPAdes FASTG where Bandage reports a 127 bp overlap.
+    """
+
+    @staticmethod
+    def _overlapping_graph(overlap_bp, n=6):
+        """A chain whose neighbours share ``overlap_bp`` bases, links marked blunt."""
+        import random
+
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        rng = random.Random(11)
+        g = AssemblyGraph("inferred")
+        previous = None
+        for i in range(n):
+            if previous is None:
+                seq = "".join(rng.choice("ACGT") for _ in range(400))
+            else:
+                seq = previous[-overlap_bp:] + "".join(
+                    rng.choice("ACGT") for _ in range(400 - overlap_bp)
+                )
+            g.add_segment(Segment(f"s{i}", seq))
+            if i:
+                g.add_link(Link(f"s{i - 1}", "+", f"s{i}", "+", 0, "*"))
+            previous = seq
+        return g
+
+    def test_exact_overlap_finds_the_shared_bases(self):
+        from assemblage.core.io.overlaps import exact_overlap
+
+        assert exact_overlap("AAAACCCGGG", "CCCGGGTTTT") == 6
+        assert exact_overlap("AAAA", "TTTT") == 0
+        assert exact_overlap("ACGT", "ACGT") == 4
+
+    def test_a_real_overlap_is_measured_and_applied(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        g = self._overlapping_graph(127)
+        assert all(link.overlap == 0 for link in g.links.values())
+        assert apply_inferred_overlaps(g) == 127
+        assert {link.overlap for link in g.links.values()} == {127}
+        assert g.overlap_default == 127
+
+    def test_the_merged_sequence_no_longer_duplicates_the_junction(self):
+        from assemblage.core.analysis.operations import merge_path
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        g = self._overlapping_graph(127, n=3)
+        apply_inferred_overlaps(g)
+        merged = merge_path(g, [("s0", "+"), ("s1", "+"), ("s2", "+")])
+        segment = g.segments[merged["new_name"]]
+        # 3 x 400 bp sharing 127 bp at each of 2 junctions
+        assert segment.length == 3 * 400 - 2 * 127
+
+    def test_genuinely_blunt_joins_are_left_alone(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        g = self._overlapping_graph(0)
+        assert apply_inferred_overlaps(g) == 0
+        assert {link.overlap for link in g.links.values()} == {0}
+
+    def test_a_coincidental_short_match_is_not_treated_as_an_overlap(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+
+        # Neighbours share only a couple of bases by chance.
+        g = self._overlapping_graph(3)
+        assert apply_inferred_overlaps(g) == 0
+
+    def test_explicit_cigars_are_never_overridden(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from assemblage.core.model import Link
+
+        g = self._overlapping_graph(127)
+        for key, link in list(g.links.items()):
+            g.links[key] = Link(
+                link.from_name, link.from_orient, link.to_name, link.to_orient, 55, "55M"
+            )
+        assert apply_inferred_overlaps(g) == 0
+        assert {link.overlap for link in g.links.values()} == {55}
+
+    def test_a_graph_without_sequences_cannot_be_measured(self):
+        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from assemblage.core.model import AssemblyGraph, Link, Segment
+
+        g = AssemblyGraph("noseq")
+        g.add_segment(Segment("a", None, length=500))
+        g.add_segment(Segment("b", None, length=500))
+        g.add_link(Link("a", "+", "b", "+", 0, "*"))
+        assert apply_inferred_overlaps(g) == 0
