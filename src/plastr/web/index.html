@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plastr — assembly graph studio</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<noscript><p class="noscript">Plastr needs JavaScript enabled.</p></noscript>
+
+<div id="app">
+
+  <!-- ───────────────────────── top bar ───────────────────────── -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Plastr</span>
+    </div>
+
+    <div class="topbar-file">
+      <span id="file-name" class="file-name" title="No graph loaded">no graph loaded</span>
+      <span id="graph-summary" class="graph-summary"></span>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="split-btn">
+        <button id="btn-rearrange" class="btn btn-primary" title="Re-run layout (R)">
+          <span class="glyph" aria-hidden="true">⟳</span> Rearrange
+        </button><button id="btn-rearrange-menu" class="btn btn-primary btn-caret"
+          aria-haspopup="dialog" aria-expanded="false" title="Rearrange options">▾</button>
+      </div>
+      <button id="btn-stop-layout" class="btn btn-danger" hidden title="Stop the running layout">■ Stop</button>
+      <button id="btn-fit" class="btn" title="Fit graph to view (F)">Fit</button>
+      <div class="sep" role="separator"></div>
+      <button id="btn-save-png" class="btn" title="Save the current view as PNG">PNG</button>
+      <button id="btn-save-svg" class="btn" title="Save the current view as SVG">SVG</button>
+      <div class="sep" role="separator"></div>
+      <button id="btn-theme" class="btn btn-icon" title="Toggle light / dark theme">◐</button>
+      <button id="btn-help" class="btn btn-icon" title="Keyboard shortcuts (?)">?</button>
+    </div>
+  </header>
+
+  <!-- ───────────────────────── sidebar ───────────────────────── -->
+  <aside id="sidebar" aria-label="Controls">
+
+    <!-- Load -->
+    <section class="panel" id="panel-load">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Load graph</button></h2>
+      <div class="panel-body">
+        <label class="field">
+          <span class="field-label">Graph file</span>
+          <span class="field-row">
+            <input type="text" id="load-path" placeholder="/path/to/assembly.gfa" spellcheck="false">
+            <button class="btn btn-sm" id="load-browse" title="Browse the server filesystem">Browse…</button>
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">Format</span>
+          <select id="load-format">
+            <option value="">auto-detect</option>
+            <option value="gfa">GFA 1.0</option>
+            <option value="gfa2">GFA 2.0</option>
+            <option value="fastg">FASTG (SPAdes)</option>
+            <option value="fasta">FASTA</option>
+          </select>
+        </label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="load-go">Load graph</button>
+          <button class="btn" id="load-refresh" title="Re-fetch the graph from the server">Reload</button>
+        </div>
+
+        <details class="sub">
+          <summary>SPAdes paths file</summary>
+          <span class="field-row">
+            <input type="text" id="paths-path" placeholder="contigs.paths" spellcheck="false">
+            <button class="btn btn-sm" id="paths-browse">Browse…</button>
+          </span>
+          <div class="btn-row"><button class="btn btn-sm" id="paths-go">Attach paths</button></div>
+        </details>
+
+        <details class="sub">
+          <summary>Level of detail</summary>
+          <label class="field"><span class="field-label">Min segment length (bp)</span>
+            <input type="number" id="lod-minlen" value="0" min="0" step="100"></label>
+          <label class="field"><span class="field-label">Max nodes fetched</span>
+            <input type="number" id="lod-maxnodes" value="15000" min="10" step="500"></label>
+          <label class="field"><span class="field-label">Component</span>
+            <select id="lod-component"><option value="">all components</option></select></label>
+          <div class="btn-row"><button class="btn btn-sm" id="lod-apply">Apply</button></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- Appearance / colour -->
+    <section class="panel" id="panel-colour">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Colour &amp; style</button></h2>
+      <div class="panel-body">
+        <label class="field"><span class="field-label">Colour by</span>
+          <select id="colour-mode">
+            <option value="random" selected>random per segment</option>
+            <option value="uniform">uniform</option>
+            <option value="depth">depth (coverage)</option>
+            <option value="gc">GC content</option>
+            <option value="length">length</option>
+            <option value="component">connected component</option>
+            <option value="randomComponent">random per component</option>
+            <option value="reference">reference chromosome</option>
+            <option value="search">search / BLAST hit</option>
+          </select>
+        </label>
+        <div id="colour-legend" class="legend-block" aria-live="polite"></div>
+        <label class="field"><span class="field-label">Width scale <output id="width-scale-out">1.0</output></span>
+          <input type="range" id="width-scale" min="0.2" max="4" step="0.1" value="1"></label>
+        <label class="check"><input type="checkbox" id="opt-depth-width" checked> Scale width by depth</label>
+        <label class="check"><input type="checkbox" id="opt-arrows"> Show direction arrows</label>
+        <label class="check"><input type="checkbox" id="opt-labels"> Show labels when zoomed</label>
+        <label class="check"><input type="checkbox" id="opt-links" checked> Draw links</label>
+        <label class="field"><span class="field-label">Node length <output id="size-scale-out">1.0</output></span>
+          <input type="range" id="size-scale" min="0.2" max="6" step="0.1" value="1.0"></label>
+      </div>
+    </section>
+
+    <!-- Reference -->
+    <section class="panel" id="panel-reference">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Insert reference</button></h2>
+      <div class="panel-body">
+        <label class="field"><span class="field-label">Reference FASTA</span>
+          <span class="field-row">
+            <input type="text" id="ref-path" placeholder="/path/to/reference.fasta" spellcheck="false">
+            <button class="btn btn-sm" id="ref-browse">Browse…</button>
+          </span>
+        </label>
+        <div class="grid-2">
+          <label class="field"><span class="field-label">Preset</span>
+            <select id="ref-preset">
+              <option value="asm5">asm5 (&lt;1% div.)</option>
+              <option value="asm10" selected>asm10 (&lt;5% div.)</option>
+              <option value="asm20">asm20 (&lt;10% div.)</option>
+            </select></label>
+          <label class="field"><span class="field-label">Threads</span>
+            <input type="number" id="ref-threads" value="4" min="1" max="128"></label>
+          <label class="field"><span class="field-label">Min identity</span>
+            <input type="number" id="ref-minid" value="0" min="0" max="1" step="0.01"></label>
+          <label class="field"><span class="field-label">Min align len</span>
+            <input type="number" id="ref-minlen" value="200" min="0" step="50"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="ref-go">Align reference</button>
+          <button class="btn btn-danger-ghost" id="ref-drop">Drop</button>
+        </div>
+        <div id="ref-results" class="results"></div>
+      </div>
+    </section>
+
+    <!-- QC -->
+    <section class="panel" id="panel-qc">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Assembly QC</button></h2>
+      <div class="panel-body">
+        <div class="btn-row"><button class="btn btn-sm" id="qc-refresh">Refresh report</button></div>
+        <div id="qc-tables" class="results"></div>
+        <div class="plot" id="plot-cumulative"></div>
+        <div class="plot" id="plot-nx"></div>
+        <div class="plot" id="plot-hist"></div>
+      </div>
+    </section>
+
+    <!-- Scaffold -->
+    <section class="panel" id="panel-scaffold">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Scaffolding</button></h2>
+      <div class="panel-body">
+        <div class="grid-2">
+          <label class="field"><span class="field-label">Method</span>
+            <select id="sc-method">
+              <option value="reference">reference-guided</option>
+              <option value="graph">graph-only</option>
+            </select></label>
+          <label class="field"><span class="field-label">Min identity</span>
+            <input type="number" id="sc-minid" value="0.8" min="0" max="1" step="0.01"></label>
+          <label class="field"><span class="field-label">Min query cov</span>
+            <input type="number" id="sc-mincov" value="0.3" min="0" max="1" step="0.05"></label>
+          <label class="field"><span class="field-label">Min align len</span>
+            <input type="number" id="sc-minalign" value="500" min="0" step="50"></label>
+          <label class="field"><span class="field-label">Min gap</span>
+            <input type="number" id="sc-mingap" value="100" min="0" step="10"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="sc-fillgaps" checked> Fill gaps from graph paths</label>
+        <label class="check"><input type="checkbox" id="sc-unplaced" checked> Include unplaced contigs</label>
+        <label class="check"><input type="checkbox" id="sc-breakmis"> Break misassemblies first</label>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="sc-build">Build scaffolds</button>
+          <button class="btn" id="sc-reload" title="Fetch the plan currently held by the server">Load plan</button>
+          <button class="btn btn-sm" id="sc-add">+ scaffold</button>
+        </div>
+        <div id="sc-preview" class="results"></div>
+        <div id="sc-notes" class="results"></div>
+        <div id="scaffold-editor" class="scaffold-editor"></div>
+        <div id="sc-unplaced-list" class="results"></div>
+      </div>
+    </section>
+
+    <!-- Operations -->
+    <section class="panel" id="panel-ops">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Operations</button></h2>
+      <div class="panel-body">
+        <div class="btn-row">
+          <button class="btn btn-danger-ghost" id="op-delete" title="Delete selected segments (Del)">Delete selection</button>
+          <button class="btn" id="op-simplify" title="Merge unbranching chains">Simplify</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="op-reverse" title="Reverse-complement the selected segment">Reverse</button>
+          <button class="btn" id="op-break" title="Break contigs at misassemblies (needs a reference)">Break misassemblies</button>
+        </div>
+        <label class="check"><input type="checkbox" id="op-break-extensive" checked> extensive misassemblies only</label>
+
+        <details class="sub">
+          <summary>Filter graph</summary>
+          <div class="grid-2">
+            <label class="field"><span class="field-label">Min length</span><input type="number" id="flt-minlen" value="500" min="0" step="100"></label>
+            <label class="field"><span class="field-label">Min depth</span><input type="number" id="flt-mindepth" placeholder="none" step="0.1"></label>
+            <label class="field"><span class="field-label">Max depth</span><input type="number" id="flt-maxdepth" placeholder="none" step="0.1"></label>
+            <label class="field"><span class="field-label">Keep N components</span><input type="number" id="flt-keepcomp" placeholder="all" min="1" step="1"></label>
+            <label class="field"><span class="field-label">Min component len</span><input type="number" id="flt-mincomplen" value="0" min="0" step="100"></label>
+          </div>
+          <div class="btn-row"><button class="btn btn-sm" id="op-filter">Apply filter</button></div>
+        </details>
+
+        <details class="sub">
+          <summary>Split segment</summary>
+          <label class="field"><span class="field-label">Segment</span><input type="text" id="split-name" placeholder="click a segment" spellcheck="false"></label>
+          <label class="field"><span class="field-label">Positions (bp, comma separated)</span><input type="text" id="split-pos" placeholder="5000, 12000" spellcheck="false"></label>
+          <div class="btn-row"><button class="btn btn-sm" id="op-split">Split</button></div>
+        </details>
+
+        <details class="sub">
+          <summary>Merge path</summary>
+          <label class="field"><span class="field-label">Steps (name+orientation)</span><input type="text" id="merge-steps" placeholder="a+, b+, c-" spellcheck="false"></label>
+          <div class="btn-row">
+            <button class="btn btn-sm" id="merge-from-sel">From selection</button>
+            <button class="btn btn-sm" id="op-merge">Merge</button>
+          </div>
+        </details>
+
+        <div class="btn-row">
+          <button class="btn" id="op-undo" title="Undo the last operation (Ctrl+Z)">Undo <span class="badge" id="undo-depth">0</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Search -->
+    <section class="panel" id="panel-search">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Sequence search</button></h2>
+      <div class="panel-body">
+        <label class="field"><span class="field-label">Query sequence or FASTA path</span>
+          <textarea id="search-query" rows="3" spellcheck="false" placeholder="ACGTACGT…  or  /path/to/query.fasta"></textarea>
+        </label>
+        <div class="grid-2">
+          <label class="field"><span class="field-label">Min identity</span>
+            <input type="number" id="search-minid" value="0.8" min="0" max="1" step="0.01"></label>
+          <label class="field"><span class="field-label">&nbsp;</span>
+            <button class="btn btn-sm" id="search-browse">Browse…</button></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="search-go">Search</button>
+          <button class="btn" id="search-clear">Clear hits</button>
+        </div>
+        <div id="search-results" class="results"></div>
+      </div>
+    </section>
+
+    <!-- Export -->
+    <section class="panel" id="panel-export">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Export</button></h2>
+      <div class="panel-body">
+        <label class="field"><span class="field-label">Output directory</span>
+          <span class="field-row">
+            <input type="text" id="export-outdir" value="plastr_out" spellcheck="false">
+            <button class="btn btn-sm" id="export-browse">Browse…</button>
+          </span>
+        </label>
+        <div class="check-grid" id="export-what">
+          <label class="check"><input type="checkbox" value="scaffolds" checked> scaffolds.fasta</label>
+          <label class="check"><input type="checkbox" value="agp" checked> scaffolds.agp</label>
+          <label class="check"><input type="checkbox" value="gfa"> graph.gfa</label>
+          <label class="check"><input type="checkbox" value="csv"> segments.csv</label>
+          <label class="check"><input type="checkbox" value="report" checked> report</label>
+          <label class="check"><input type="checkbox" value="session"> session</label>
+        </div>
+        <div class="btn-row"><button class="btn btn-primary" id="export-go">Write files</button></div>
+        <div id="export-results" class="results"></div>
+        <div class="field-label">Direct downloads</div>
+        <div class="dl-row" id="download-links"></div>
+        <div class="field-label">View state</div>
+        <div class="btn-row">
+          <button class="btn btn-sm" id="session-save">Save layout to session</button>
+          <button class="btn btn-sm" id="session-load">Restore</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Selection -->
+    <section class="panel" id="panel-selection">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Selection</button></h2>
+      <div class="panel-body">
+        <div id="selection-detail" class="results"><p class="muted">Click a segment on the canvas.</p></div>
+      </div>
+    </section>
+
+  </aside>
+
+  <!-- ───────────────────────── canvas ───────────────────────── -->
+  <main id="stage">
+    <canvas id="canvas" tabindex="0" aria-label="Assembly graph"></canvas>
+    <div id="canvas-legend" class="canvas-legend" hidden></div>
+    <div id="hover-tip" class="hover-tip" hidden></div>
+    <div id="empty-hint" class="empty-hint">
+      <div class="empty-card">
+        <h3>No graph loaded</h3>
+        <p>Use <strong>Load graph</strong> in the sidebar, or start the server with a file:</p>
+        <code>plastr view assembly.gfa</code>
+      </div>
+    </div>
+    <div id="toasts" class="toasts" aria-live="assertive"></div>
+  </main>
+
+  <!-- ───────────────────────── status strip ───────────────────────── -->
+  <footer id="statusbar">
+    <span id="status-msg" class="status-msg">Ready</span>
+    <span class="spacer"></span>
+    <span id="status-layout" class="status-chip"></span>
+    <span id="status-sel" class="status-chip">0 selected</span>
+    <span id="status-counts" class="status-chip">—</span>
+    <span id="status-zoom" class="status-chip">100%</span>
+    <span id="busy" class="busy" hidden><span class="busy-spin" aria-hidden="true"></span><span id="busy-label">working…</span></span>
+  </footer>
+</div>
+
+<!-- ───────────────────────── rearrange popover ───────────────────────── -->
+<div id="rearrange-pop" class="popover" role="dialog" aria-label="Rearrange layout" hidden>
+  <div class="pop-head">Rearrange <button class="btn btn-icon btn-sm" id="rearrange-close" title="Close">✕</button></div>
+  <div class="pop-body">
+    <fieldset class="fs">
+      <legend>Scope</legend>
+      <label class="check"><input type="radio" name="rr-scope" value="all" checked> Whole graph</label>
+      <label class="check"><input type="radio" name="rr-scope" value="selection"> Selection only</label>
+      <label class="check"><input type="radio" name="rr-scope" value="component"> One component</label>
+      <select id="rr-component" class="inline-select"><option value="">—</option></select>
+    </fieldset>
+    <fieldset class="fs">
+      <legend>Mode</legend>
+      <label class="check"><input type="radio" name="rr-mode" value="force" checked> Force-directed</label>
+      <label class="check"><input type="radio" name="rr-mode" value="linear"> Linear (left→right by component)</label>
+      <label class="check"><input type="radio" name="rr-mode" value="circular"> Circular</label>
+      <label class="check"><input type="radio" name="rr-mode" value="grid"> Component grid</label>
+    </fieldset>
+    <details class="sub">
+      <summary>Physics</summary>
+      <label class="field"><span class="field-label">Repulsion <output id="rr-rep-out">0.05</output></span>
+        <input type="range" id="rr-repulsion" min="0.005" max="1" step="0.005" value="0.05"></label>
+      <label class="field"><span class="field-label">Link strength <output id="rr-link-out">1.80</output></span>
+        <input type="range" id="rr-linkstr" min="0.1" max="4" step="0.05" value="1.8"></label>
+      <label class="field"><span class="field-label">Gravity <output id="rr-grav-out">0.090</output></span>
+        <input type="range" id="rr-gravity" min="0" max="0.4" step="0.005" value="0.09"></label>
+      <label class="field"><span class="field-label">Max iterations</span>
+        <input type="number" id="rr-iters" value="600" min="30" max="20000" step="50"></label>
+    </details>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="rr-apply">Apply</button>
+      <button class="btn btn-danger" id="rr-stop" disabled>Stop</button>
+    </div>
+    <p class="muted small" id="rr-status"></p>
+  </div>
+</div>
+
+<!-- ───────────────────────── file browser ───────────────────────── -->
+<div id="modal-browse" class="modal" role="dialog" aria-modal="true" aria-label="Choose a file" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card">
+    <div class="modal-head">
+      <strong id="browse-title">Choose a file</strong>
+      <button class="btn btn-icon btn-sm" id="browse-close" title="Close">✕</button>
+    </div>
+    <div class="browse-bar">
+      <button class="btn btn-sm" id="browse-up" title="Parent directory">↑</button>
+      <input type="text" id="browse-path" spellcheck="false" placeholder="/">
+      <button class="btn btn-sm" id="browse-go">Go</button>
+    </div>
+    <ul id="browse-list" class="browse-list"></ul>
+    <div class="modal-foot">
+      <span id="browse-sel" class="muted small">nothing selected</span>
+      <span class="spacer"></span>
+      <button class="btn btn-sm" id="browse-choose-dir">Use this folder</button>
+      <button class="btn btn-primary btn-sm" id="browse-choose">Choose</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────────────────────── help overlay ───────────────────────── -->
+<div id="help-overlay" class="modal" role="dialog" aria-modal="true" aria-label="Help" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card modal-wide">
+    <div class="modal-head">
+      <strong>Keyboard &amp; mouse</strong>
+      <button class="btn btn-icon btn-sm" id="help-close" title="Close">✕</button>
+    </div>
+    <div class="help-body">
+      <div class="help-col">
+        <h4>Keyboard</h4>
+        <dl class="kbd-list">
+          <dt><kbd>R</kbd></dt><dd>Rearrange (re-run layout)</dd>
+          <dt><kbd>F</kbd></dt><dd>Fit graph to view</dd>
+          <dt><kbd>Del</kbd> / <kbd>Backspace</kbd></dt><dd>Delete the selected segments</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo the last operation</dd>
+          <dt><kbd>/</kbd></dt><dd>Focus the search box</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Clear selection / close dialogs</dd>
+          <dt><kbd>?</kbd></dt><dd>This help</dd>
+          <dt><kbd>A</kbd></dt><dd>Select all visible segments</dd>
+          <dt><kbd>Space</kbd>+drag</dt><dd>Pan regardless of what is under the cursor</dd>
+        </dl>
+      </div>
+      <div class="help-col">
+        <h4>Mouse</h4>
+        <dl class="kbd-list">
+          <dt>Drag background</dt><dd>Pan the view</dd>
+          <dt>Wheel</dt><dd>Zoom, centred on the cursor</dd>
+          <dt>Click segment</dt><dd>Select it</dd>
+          <dt><kbd>Shift</kbd>+click</dt><dd>Add / remove from selection</dd>
+          <dt><kbd>Shift</kbd>+drag background</dt><dd>Rectangle select</dd>
+          <dt>Drag a selected segment</dt><dd>Move the selection</dd>
+          <dt>Double-click segment</dt><dd>Centre the view on it</dd>
+        </dl>
+        <h4>Notes</h4>
+        <p class="muted small">Each segment is drawn as a polyline whose length grows with the square
+        root of its sequence length, and whose thickness follows read depth — the same convention
+        Bandage uses. Links attach to the correct end of each polyline according to their
+        orientation signs.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

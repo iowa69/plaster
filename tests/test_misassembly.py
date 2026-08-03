@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from assemblage.core.analysis.align import Alignment, alignment_backend
-from assemblage.core.analysis.misassembly import (
+from plastr.core.analysis.align import Alignment, alignment_backend
+from plastr.core.analysis.misassembly import (
     INVERSION,
     LOCAL,
     RELOCATION,
@@ -390,7 +390,7 @@ class TestCircularReferences:
 
     @staticmethod
     def _block(q_st, q_en, r_st, r_en, ref="chr", strand=1, r_len=100_000):
-        from assemblage.core.analysis.align import Alignment
+        from plastr.core.analysis.align import Alignment
 
         return Alignment(
             query="c1", q_len=q_en, q_st=q_st, q_en=q_en, strand=strand,
@@ -400,7 +400,7 @@ class TestCircularReferences:
         )
 
     def test_a_contig_spanning_the_origin_is_not_a_misassembly(self):
-        from assemblage.core.analysis.misassembly import classify_misassemblies
+        from plastr.core.analysis.misassembly import classify_misassemblies
 
         # Ends at the last base of a 100 kb replicon, resumes at base 0.
         blocks = [
@@ -410,7 +410,7 @@ class TestCircularReferences:
         assert classify_misassemblies(blocks) == []
 
     def test_the_same_jump_is_a_relocation_on_a_linear_reference(self):
-        from assemblage.core.analysis.misassembly import RELOCATION, classify_misassemblies
+        from plastr.core.analysis.misassembly import RELOCATION, classify_misassemblies
 
         blocks = [
             self._block(0, 40_000, 60_000, 100_000),
@@ -420,7 +420,7 @@ class TestCircularReferences:
         assert [e.kind for e in events] == [RELOCATION]
 
     def test_a_genuine_relocation_is_still_caught_on_a_circular_reference(self):
-        from assemblage.core.analysis.misassembly import RELOCATION, classify_misassemblies
+        from plastr.core.analysis.misassembly import RELOCATION, classify_misassemblies
 
         # A 20 kb jump in the middle of a 100 kb replicon is nowhere near the
         # origin, so circularity must not excuse it.
@@ -432,7 +432,7 @@ class TestCircularReferences:
         assert [e.kind for e in events] == [RELOCATION]
 
     def test_circular_distance_takes_the_short_way_round(self):
-        from assemblage.core.analysis.misassembly import circular_distance
+        from plastr.core.analysis.misassembly import circular_distance
 
         assert circular_distance(-99_500, 100_000, True) == 500
         assert circular_distance(-99_500, 100_000, False) == 99_500
@@ -449,7 +449,7 @@ class TestSecondaryAlignmentsAreExcluded:
 
     @staticmethod
     def _aln(query, q_st, q_en, r_st, r_en, primary, nm=0):
-        from assemblage.core.analysis.align import Alignment
+        from plastr.core.analysis.align import Alignment
 
         return Alignment(
             query=query, q_len=q_en, q_st=q_st, q_en=q_en, strand=1,
@@ -459,7 +459,7 @@ class TestSecondaryAlignmentsAreExcluded:
         )
 
     def test_total_aligned_length_never_exceeds_the_assembly(self):
-        from assemblage.core.analysis.misassembly import evaluate_against_reference
+        from plastr.core.analysis.misassembly import evaluate_against_reference
 
         # One 5 kb repeat contig placed at three loci: one primary, two secondary.
         alignments = [
@@ -474,7 +474,7 @@ class TestSecondaryAlignmentsAreExcluded:
         assert report.covered_bases == 5_000
 
     def test_secondary_hits_can_be_included_on_request(self):
-        from assemblage.core.analysis.misassembly import evaluate_against_reference
+        from plastr.core.analysis.misassembly import evaluate_against_reference
 
         alignments = [
             self._aln("repeat", 0, 5_000, 10_000, 15_000, True),
@@ -487,7 +487,7 @@ class TestSecondaryAlignmentsAreExcluded:
         assert report.covered_bases == 10_000
 
     def test_secondary_hits_do_not_inflate_the_mismatch_rate(self):
-        from assemblage.core.analysis.misassembly import evaluate_against_reference
+        from plastr.core.analysis.misassembly import evaluate_against_reference
 
         alignments = [
             self._aln("repeat", 0, 10_000, 10_000, 20_000, True, nm=10),

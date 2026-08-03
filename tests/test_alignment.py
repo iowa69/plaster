@@ -1,4 +1,4 @@
-"""Tests for assemblage.core.analysis.align.
+"""Tests for plastr.core.analysis.align.
 
 The hand-built alignments here are deliberately arithmetic-friendly so every
 coordinate can be checked exactly.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from assemblage.core.analysis.align import (
+from plastr.core.analysis.align import (
     Alignment,
     align_graph,
     alignment_backend,

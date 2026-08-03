@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 240" width="640" height="240" role="img" aria-label="Plastr: a sticking plaster patching a gap in an assembly graph">
+  <title>Plastr</title>
+  <desc>A sticking plaster covering the gap between two contigs of an assembly graph.</desc>
+
+  <defs>
+    <!-- the fabric of the plaster -->
+    <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#f6cfa6"/>
+      <stop offset="0.5" stop-color="#eab585"/>
+      <stop offset="1"   stop-color="#d9a071"/>
+    </linearGradient>
+    <!-- the absorbent pad in the middle -->
+    <linearGradient id="pad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdf6ec"/>
+      <stop offset="1" stop-color="#f0e4d2"/>
+    </linearGradient>
+    <!-- the little breathing holes -->
+    <pattern id="holes" width="13" height="13" patternUnits="userSpaceOnUse">
+      <circle cx="6.5" cy="6.5" r="1.7" fill="#00000022"/>
+    </pattern>
+  </defs>
+
+  <!-- ── the assembly graph underneath ───────────────────────────── -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- left contig: a long teal ribbon that stops dead -->
+    <path d="M28 150 C 70 96, 120 84, 168 104 C 200 117, 216 134, 236 146"
+          stroke="#14304a" stroke-width="26"/>
+    <path d="M28 150 C 70 96, 120 84, 168 104 C 200 117, 216 134, 236 146"
+          stroke="#2ec4b6" stroke-width="19"/>
+
+    <!-- right contig: a magenta ribbon starting again on the far side -->
+    <path d="M404 146 C 428 132, 452 116, 492 106 C 546 92, 592 112, 614 152"
+          stroke="#14304a" stroke-width="26"/>
+    <path d="M404 146 C 428 132, 452 116, 492 106 C 546 92, 592 112, 614 152"
+          stroke="#e05c8f" stroke-width="19"/>
+
+    <!-- a small orphan node, because there is always one -->
+    <path d="M300 214 l 44 -10" stroke="#14304a" stroke-width="22"/>
+    <path d="M300 214 l 44 -10" stroke="#f6c445" stroke-width="15"/>
+  </g>
+
+  <!-- the gap the plaster is covering: dashed, because it is missing sequence -->
+  <path d="M240 147 L 400 147" stroke="#14304a" stroke-width="4"
+        stroke-dasharray="9 11" stroke-linecap="round" opacity="0.45"/>
+
+  <!-- ── the plaster itself, slapped on at a jaunty angle ────────── -->
+  <g transform="rotate(-12 320 140)">
+    <!-- soft drop shadow so it sits on top of the graph -->
+    <rect x="176" y="106" width="288" height="78" rx="39"
+          fill="#0b1622" opacity="0.22" transform="translate(4 8)"/>
+
+    <!-- the adhesive strip -->
+    <rect x="176" y="106" width="288" height="78" rx="39"
+          fill="url(#fabric)" stroke="#a9713f" stroke-width="3.5"/>
+    <rect x="176" y="106" width="288" height="78" rx="39" fill="url(#holes)"/>
+
+    <!-- the pad -->
+    <rect x="256" y="120" width="128" height="50" rx="9"
+          fill="url(#pad)" stroke="#c7a882" stroke-width="2.5"/>
+
+    <!-- a tiny double helix across the pad: a plaster for DNA -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M266 145 C 280 125, 294 165, 308 145 C 322 125, 336 165, 350 145 C 364 125, 374 158, 378 148"
+            stroke="#e05c8f" stroke-width="4"/>
+      <path d="M266 145 C 280 165, 294 125, 308 145 C 322 165, 336 125, 350 145 C 364 165, 374 132, 378 142"
+            stroke="#2ec4b6" stroke-width="4"/>
+      <g stroke="#14304a" stroke-width="2.2" opacity="0.5">
+        <path d="M280 137 L 280 153"/>
+        <path d="M294 137 L 294 153"/>
+        <path d="M322 137 L 322 153"/>
+        <path d="M336 137 L 336 153"/>
+      </g>
+    </g>
+  </g>
+</svg>

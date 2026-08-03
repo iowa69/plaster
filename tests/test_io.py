@@ -7,29 +7,29 @@ import textwrap
 
 import pytest
 
-from assemblage.core.errors import AssemblageFormatError
-from assemblage.core.io.agp import (
+from plastr.core.errors import PlastrFormatError
+from plastr.core.io.agp import (
     COMPONENT_CONTIG,
     GAP_KNOWN,
     AgpRow,
     read_agp,
     write_agp,
 )
-from assemblage.core.io.fasta import (
+from plastr.core.io.fasta import (
     fasta_string,
     read_fasta,
     read_fasta_dict,
     write_fasta,
 )
-from assemblage.core.io.fastg import read_fastg
-from assemblage.core.io.gfa import (
+from plastr.core.io.fastg import read_fastg
+from plastr.core.io.gfa import (
     cigar_overlap,
     detect_format,
     read_gfa,
     write_gfa,
 )
-from assemblage.core.io.loader import load_graph, read_contigs_fasta
-from assemblage.core.sequence import revcomp
+from plastr.core.io.loader import load_graph, read_contigs_fasta
+from plastr.core.sequence import revcomp
 
 
 def write(path, text: str):
@@ -200,7 +200,7 @@ class TestGfaErrors:
             L\ta\tx\tb\t+\t0M
             """,
         )
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             read_gfa(str(src))
         assert exc.value.line_no == 4
         assert "orientation" in exc.value.message
@@ -214,7 +214,7 @@ class TestGfaErrors:
             S\tlonely
             """,
         )
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             read_gfa(str(src))
         assert exc.value.line_no == 2
         assert "S line" in exc.value.message
@@ -228,7 +228,7 @@ class TestGfaErrors:
             L\ta\t+\tb
             """,
         )
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             read_gfa(str(src))
         assert exc.value.line_no == 3
         assert "L line" in exc.value.message
@@ -241,7 +241,7 @@ class TestGfaErrors:
             L\ta\t+\tb\t+\t0M
             """,
         )
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             read_gfa(str(src))
         assert "no S (segment) lines" in exc.value.message
         # There is no single offending line for this one, but the file is named.
@@ -258,7 +258,7 @@ class TestGfaErrors:
             """,
         )
         assert len(read_gfa(str(src)).segments) == 1
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             read_gfa(str(src), strict=True)
         assert exc.value.line_no == 3
 
@@ -339,26 +339,26 @@ class TestFastaReading:
 
     def test_empty_header_raises(self, tmp_path):
         src = write(tmp_path / "e.fa", ">\nACGT\n")
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             list(read_fasta(str(src)))
         assert "empty header" in exc.value.message
         assert exc.value.line_no == 1
 
     def test_sequence_before_any_header_raises(self, tmp_path):
         src = write(tmp_path / "e.fa", "ACGT\n>a\nACGT\n")
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             list(read_fasta(str(src)))
         assert "before any" in exc.value.message
         assert exc.value.line_no == 1
 
     def test_a_file_without_records_raises(self, tmp_path):
         src = write(tmp_path / "e.fa", "\n\n")
-        with pytest.raises(AssemblageFormatError, match="no FASTA records"):
+        with pytest.raises(PlastrFormatError, match="no FASTA records"):
             list(read_fasta(str(src)))
 
     def test_read_fasta_dict_rejects_duplicates(self, tmp_path):
         src = write(tmp_path / "d.fa", ">a\nACGT\n>a\nTTTT\n")
-        with pytest.raises(AssemblageFormatError, match="duplicate sequence name"):
+        with pytest.raises(PlastrFormatError, match="duplicate sequence name"):
             read_fasta_dict(str(src))
 
     def test_read_fasta_dict(self, tmp_path):
@@ -460,7 +460,7 @@ class TestFastg:
 
     def test_plain_fasta_is_rejected(self, tmp_path):
         src = write(tmp_path / "plain.fastg", ">edge_1\nACGT\n>edge_2\nTTTT\n")
-        with pytest.raises(AssemblageFormatError, match="looks like plain FASTA"):
+        with pytest.raises(PlastrFormatError, match="looks like plain FASTA"):
             read_fastg(str(src))
 
 
@@ -508,7 +508,7 @@ class TestAgp:
     def test_short_row_raises_with_a_line_number(self, tmp_path):
         out = tmp_path / "bad.agp"
         out.write_text("##agp-version\t2.1\nscaf1\t1\t1000\t1\tW\tctgA\n")
-        with pytest.raises(AssemblageFormatError) as exc:
+        with pytest.raises(PlastrFormatError) as exc:
             list(read_agp(str(out)))
         assert exc.value.line_no == 2
         assert "9 columns" in exc.value.message
@@ -516,7 +516,7 @@ class TestAgp:
     def test_non_integer_coordinate_raises(self, tmp_path):
         out = tmp_path / "bad.agp"
         out.write_text("scaf1\tone\t1000\t1\tW\tctgA\t1\t1000\t+\n")
-        with pytest.raises(AssemblageFormatError, match="must be integers"):
+        with pytest.raises(PlastrFormatError, match="must be integers"):
             list(read_agp(str(out)))
 
 
@@ -579,12 +579,12 @@ class TestLoader:
         }
 
     def test_missing_file(self, tmp_path):
-        with pytest.raises(AssemblageFormatError, match="file not found"):
+        with pytest.raises(PlastrFormatError, match="file not found"):
             load_graph(str(tmp_path / "nope.gfa"))
 
     def test_unknown_format(self, tmp_path):
         src = write(tmp_path / "notes.txt", "just some prose\n")
-        with pytest.raises(AssemblageFormatError, match="could not determine the format"):
+        with pytest.raises(PlastrFormatError, match="could not determine the format"):
             load_graph(str(src))
 
     def test_explicit_format_overrides_sniffing(self, demo_paths):
@@ -605,7 +605,7 @@ class TestOverlapInference:
         """A chain whose neighbours share ``overlap_bp`` bases, links marked blunt."""
         import random
 
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         rng = random.Random(11)
         g = AssemblyGraph("inferred")
@@ -624,14 +624,14 @@ class TestOverlapInference:
         return g
 
     def test_exact_overlap_finds_the_shared_bases(self):
-        from assemblage.core.io.overlaps import exact_overlap
+        from plastr.core.io.overlaps import exact_overlap
 
         assert exact_overlap("AAAACCCGGG", "CCCGGGTTTT") == 6
         assert exact_overlap("AAAA", "TTTT") == 0
         assert exact_overlap("ACGT", "ACGT") == 4
 
     def test_a_real_overlap_is_measured_and_applied(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         g = self._overlapping_graph(127)
         assert all(link.overlap == 0 for link in g.links.values())
@@ -640,8 +640,8 @@ class TestOverlapInference:
         assert g.overlap_default == 127
 
     def test_the_merged_sequence_no_longer_duplicates_the_junction(self):
-        from assemblage.core.analysis.operations import merge_path
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.analysis.operations import merge_path
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         g = self._overlapping_graph(127, n=3)
         apply_inferred_overlaps(g)
@@ -651,22 +651,22 @@ class TestOverlapInference:
         assert segment.length == 3 * 400 - 2 * 127
 
     def test_genuinely_blunt_joins_are_left_alone(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         g = self._overlapping_graph(0)
         assert apply_inferred_overlaps(g) == 0
         assert {link.overlap for link in g.links.values()} == {0}
 
     def test_a_coincidental_short_match_is_not_treated_as_an_overlap(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         # Neighbours share only a couple of bases by chance.
         g = self._overlapping_graph(3)
         assert apply_inferred_overlaps(g) == 0
 
     def test_explicit_cigars_are_never_overridden(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
-        from assemblage.core.model import Link
+        from plastr.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.model import Link
 
         g = self._overlapping_graph(127)
         for key, link in list(g.links.items()):
@@ -677,8 +677,8 @@ class TestOverlapInference:
         assert {link.overlap for link in g.links.values()} == {55}
 
     def test_a_graph_without_sequences_cannot_be_measured(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         g = AssemblyGraph("noseq")
         g.add_segment(Segment("a", None, length=500))
@@ -699,7 +699,7 @@ class TestMixedOverlapGraphs:
     def _mixed(n_overlapping=20, n_blunt=6, overlap=55):
         import random
 
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         rng = random.Random(5)
         seq = lambda n: "".join(rng.choice("ACGT") for _ in range(n))  # noqa: E731
@@ -718,7 +718,7 @@ class TestMixedOverlapGraphs:
         return g
 
     def test_only_the_links_that_really_overlap_get_the_overlap(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         g = self._mixed()
         assert apply_inferred_overlaps(g) == 55
@@ -728,15 +728,15 @@ class TestMixedOverlapGraphs:
         assert {lk.overlap for lk in blunt} == {0}
 
     def test_walking_a_blunt_join_keeps_every_base(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.io.overlaps import apply_inferred_overlaps
 
         g = self._mixed()
         apply_inferred_overlaps(g)
         assert len(g.walk_sequence([("b0", "+"), ("b1", "+")])) == 800
 
     def test_a_single_coincidental_match_does_not_become_the_default(self):
-        from assemblage.core.io.overlaps import apply_inferred_overlaps
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.io.overlaps import apply_inferred_overlaps
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         # One measurable link among many that carry no sequence.
         g = AssemblyGraph("sparse")

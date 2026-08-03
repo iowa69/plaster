@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "assemblage"
+name = "plastr"
 version = "1.0.0"
 description = "Interactive assembly graph studio: Bandage-style visualisation, QUAST-style QC, and reference-guided scaffolding you can export."
 readme = "README.md"
@@ -27,11 +27,11 @@ align = ["mappy>=2.24"]
 dev = ["pytest>=7.4", "httpx>=0.26"]
 
 [project.scripts]
-assemblage = "assemblage.cli:main"
+plastr = "plastr.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/iowa69/assemblage"
-Issues = "https://github.com/iowa69/assemblage/issues"
+Homepage = "https://github.com/iowa69/plaster"
+Issues = "https://github.com/iowa69/plaster/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -40,7 +40,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-assemblage = ["web/**/*", "templates/**/*"]
+plastr = ["web/**/*", "templates/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

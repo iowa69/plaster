@@ -1,10 +1,10 @@
-"""Tests for assemblage.core.sequence."""
+"""Tests for plastr.core.sequence."""
 
 from __future__ import annotations
 
 import pytest
 
-from assemblage.core.sequence import flip, gc_content, n_count, oriented, revcomp
+from plastr.core.sequence import flip, gc_content, n_count, oriented, revcomp
 
 
 class TestRevcomp:

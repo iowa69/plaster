@@ -13,10 +13,10 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from assemblage.core.project import Project  # noqa: E402
+from plastr.core.project import Project  # noqa: E402
 
 from conftest import requires_aligner  # noqa: E402
-from assemblage.server.app import create_app  # noqa: E402
+from plastr.server.app import create_app  # noqa: E402
 
 
 @pytest.fixture

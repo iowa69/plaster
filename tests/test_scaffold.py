@@ -11,19 +11,19 @@ from collections import defaultdict, deque
 
 import pytest
 
-from assemblage.core.analysis.align import align_graph, alignment_backend
-from assemblage.core.analysis.misassembly import evaluate_against_reference
-from assemblage.core.analysis.operations import break_misassemblies
-from assemblage.core.io.agp import COMPONENT_CONTIG, GAP_KNOWN, GAP_UNKNOWN, read_agp
-from assemblage.core.io.fasta import read_fasta
-from assemblage.core.model import AssemblyGraph, Link, Segment
-from assemblage.core.scaffold.builder import build_scaffolds, write_scaffolds
-from assemblage.core.scaffold.graph_bridge import (
+from plastr.core.analysis.align import align_graph, alignment_backend
+from plastr.core.analysis.misassembly import evaluate_against_reference
+from plastr.core.analysis.operations import break_misassemblies
+from plastr.core.io.agp import COMPONENT_CONTIG, GAP_KNOWN, GAP_UNKNOWN, read_agp
+from plastr.core.io.fasta import read_fasta
+from plastr.core.model import AssemblyGraph, Link, Segment
+from plastr.core.scaffold.builder import build_scaffolds, write_scaffolds
+from plastr.core.scaffold.graph_bridge import (
     _bridge_sequence,
     bridge_gap,
     find_unbranching_paths,
 )
-from assemblage.core.scaffold.plan import (
+from plastr.core.scaffold.plan import (
     GAP_ADJACENT,
     GAP_DEFAULT,
     GAP_GRAPH,
@@ -32,7 +32,7 @@ from assemblage.core.scaffold.plan import (
     ScaffoldMember,
     ScaffoldPlan,
 )
-from assemblage.core.scaffold.reference_guided import scaffold_by_reference
+from plastr.core.scaffold.reference_guided import scaffold_by_reference
 
 pytestmark = pytest.mark.skipif(
     alignment_backend() == "none",
@@ -194,7 +194,7 @@ class TestFastaAgpContract:
                 assert piece == "N" * row.gap_length
 
     def test_reverse_oriented_members_are_revcomped_in_the_fasta(self):
-        from assemblage.core.sequence import revcomp
+        from plastr.core.sequence import revcomp
 
         seq_a = "AAAACCCCGGGGTTTA"
         seq_b = "ACGTACGTACGTACGA"
@@ -264,7 +264,7 @@ class TestFastaAgpContract:
         assert built.records[0][1] == "ACGT" * 10
 
     def test_a_segment_without_sequence_is_a_hard_error(self):
-        from assemblage.core.errors import GraphOperationError
+        from plastr.core.errors import GraphOperationError
 
         graph = AssemblyGraph()
         graph.add_segment(Segment("a", None, 100))
@@ -545,7 +545,7 @@ class TestStaleBridges:
 
     @staticmethod
     def _plan():
-        from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+        from plastr.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
 
         plan = ScaffoldPlan(method="manual")
         plan.scaffolds.append(
@@ -561,7 +561,7 @@ class TestStaleBridges:
 
     @staticmethod
     def _graph():
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         g = AssemblyGraph("bridge")
         g.add_segment(Segment("A", "A" * 500))
@@ -572,7 +572,7 @@ class TestStaleBridges:
         return g
 
     def test_a_valid_bridge_is_still_spliced_in(self):
-        from assemblage.core.scaffold.builder import build_scaffolds
+        from plastr.core.scaffold.builder import build_scaffolds
 
         graph = self._graph()
         built = build_scaffolds(graph, self._plan())
@@ -581,7 +581,7 @@ class TestStaleBridges:
         assert built.records[0][1] == "A" * 500 + "C" * 300 + "G" * 500
 
     def test_flipping_a_member_drops_the_bridge_and_leaves_a_gap(self):
-        from assemblage.core.scaffold.builder import build_scaffolds
+        from plastr.core.scaffold.builder import build_scaffolds
 
         graph = self._graph()
         plan = self._plan()
@@ -596,8 +596,8 @@ class TestStaleBridges:
         assert "N" * 100 in sequence
 
     def test_the_agp_still_describes_the_fasta_after_a_dropped_bridge(self):
-        from assemblage.core.io.agp import GAP_KNOWN, GAP_UNKNOWN
-        from assemblage.core.scaffold.builder import build_scaffolds
+        from plastr.core.io.agp import GAP_KNOWN, GAP_UNKNOWN
+        from plastr.core.scaffold.builder import build_scaffolds
 
         graph = self._graph()
         plan = self._plan()
@@ -634,7 +634,7 @@ class TestScaffoldReconstructsTheGenome:
         assembler emits them."""
         import random
 
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         rng = random.Random(seed)
         genome = "".join(rng.choice("ACGT") for _ in range(length))
@@ -652,8 +652,8 @@ class TestScaffoldReconstructsTheGenome:
         return genome, g
 
     def _scaffold(self, graph):
-        from assemblage.core.project import Project
-        from assemblage.core.scaffold.builder import build_scaffolds
+        from plastr.core.project import Project
+        from plastr.core.scaffold.builder import build_scaffolds
 
         p = Project()
         p.graph = graph
@@ -675,11 +675,11 @@ class TestScaffoldReconstructsTheGenome:
     def test_a_bridged_gap_and_a_reversed_member_still_reconstruct_the_genome(self):
         import random
 
-        from assemblage.core.io.agp import GAP_KNOWN, GAP_UNKNOWN
-        from assemblage.core.model import AssemblyGraph, Link, Segment
-        from assemblage.core.scaffold.builder import build_scaffolds
-        from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
-        from assemblage.core.sequence import revcomp
+        from plastr.core.io.agp import GAP_KNOWN, GAP_UNKNOWN
+        from plastr.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.scaffold.builder import build_scaffolds
+        from plastr.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+        from plastr.core.sequence import revcomp
 
         rng = random.Random(9)
         overlap = 40
@@ -738,9 +738,9 @@ def test_a_contig_placed_twice_is_reported():
     A repeat legitimately recurs, so this is a warning rather than an error --
     but it must not pass silently.
     """
-    from assemblage.core.model import AssemblyGraph, Segment
-    from assemblage.core.scaffold.builder import build_scaffolds
-    from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+    from plastr.core.model import AssemblyGraph, Segment
+    from plastr.core.scaffold.builder import build_scaffolds
+    from plastr.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
 
     g = AssemblyGraph("dup")
     g.add_segment(Segment("a", "A" * 500))
@@ -761,9 +761,9 @@ def test_a_contig_placed_twice_is_reported():
 
 
 def test_a_single_placement_produces_no_warning():
-    from assemblage.core.model import AssemblyGraph, Segment
-    from assemblage.core.scaffold.builder import build_scaffolds
-    from assemblage.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
+    from plastr.core.model import AssemblyGraph, Segment
+    from plastr.core.scaffold.builder import build_scaffolds
+    from plastr.core.scaffold.plan import Scaffold, ScaffoldMember, ScaffoldPlan
 
     g = AssemblyGraph("ok")
     g.add_segment(Segment("a", "A" * 500))

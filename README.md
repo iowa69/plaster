@@ -1,73 +1,98 @@
-# Assemblage
+<p align="center">
+  <img src="docs/images/logo.svg" alt="Plastr" width="440">
+</p>
 
-**Interactive assembly graph studio** — Bandage-style visualisation, QUAST-style
-quality assessment, and reference-guided scaffolding whose output you can
-actually use downstream.
+<h1 align="center">Plastr</h1>
 
-Assemblage exists because the two tools everyone reaches for after an assembly
+<p align="center">
+  <em>A plaster for your assembly.</em><br>
+  Bandage-style visualisation, QUAST-style quality assessment, and
+  reference-guided scaffolding whose output you can actually use downstream.
+</p>
+
+---
+
+Plastr exists because the two tools everyone reaches for after an assembly
 answer different halves of the same question. Bandage shows you the graph but
 cannot tell you whether it is right, and cannot produce a better assembly.
-QUAST tells you what is wrong but you cannot see it or fix it. Assemblage does
+QUAST tells you what is wrong but you cannot see it or fix it. Plastr does
 both, and then lets you act on what you found: break the misassembled contigs,
 order and orient the rest against a reference, fill the gaps with real sequence
 recovered from the graph, and export scaffolds plus a matching AGP.
+
+The name is the British word for a sticking plaster, which is what this does to
+your assembly, and a nod to Bandage — whose job it half inherits.
 
 ---
 
 ## Install
 
 ```bash
-git clone https://github.com/iowa69/assemblage.git && cd assemblage
+git clone https://github.com/iowa69/plaster.git && cd plaster
 conda env create -f environment.yml
-conda activate assemblage
+conda activate plastr
 ```
 
-That is the whole install. It pulls in minimap2, mappy, BLAST, and the web
-service, and installs the `assemblage` command.
+That is the whole install. It pulls in minimap2, mappy, BLAST and the web
+service, and gives you the `plastr` command.
+
+### As a conda package
+
+A conda recipe lives in [`conda/`](conda/). Build and install it locally with:
+
+```bash
+conda-build conda -c conda-forge -c bioconda
+conda install -c local plastr
+```
+
+`conda install -c bioconda plastr` is not available yet — the recipe is ready
+but has not been submitted to bioconda. Note the package is `plastr`, not
+`plaster`: the latter is already taken on PyPI and in conda's `defaults`
+channel by an unrelated Pylons library.
 
 Check that everything is present, then generate a small demo dataset with known
 errors built into it:
 
 ```bash
-assemblage doctor
+plastr doctor
 python examples/make_demo_data.py
-assemblage qc examples/demo/assembly.gfa -r examples/demo/reference.fasta --preset asm5
+plastr qc examples/demo/assembly.gfa -r examples/demo/reference.fasta --preset asm5
 ```
 
-`assemblage doctor` reports what is installed and, for anything missing, what
+`plastr doctor` reports what is installed and, for anything missing, what
 you lose without it.
 
 ## Use it
 
 ```bash
-assemblage view assembly.gfa                          # open the studio
-assemblage view assembly.gfa -r reference.fasta       # ...with a reference already loaded
+plastr view assembly.gfa                          # open the studio
+plastr view assembly.gfa -r reference.fasta       # ...with a reference already loaded
 ```
 
 Your browser opens on the graph. Everything else is in the sidebar.
 
-The same operations run headlessly, so Assemblage fits a pipeline as well as it
+The same operations run headlessly, so Plastr fits a pipeline as well as it
 fits a screen:
 
 ```bash
 # Quality report, with reference evaluation
-assemblage qc assembly.gfa -r reference.fasta --html report.html
+plastr qc assembly.gfa -r reference.fasta --html report.html
 
 # Break misassemblies, scaffold against the reference, export everything
-assemblage scaffold assembly.gfa -r reference.fasta \
+plastr scaffold assembly.gfa -r reference.fasta \
     --break-misassemblies -o results/
 
 # Where is this gene?
-assemblage search assembly.gfa --query gene.fasta
+plastr search assembly.gfa --query gene.fasta
 
 # Quick look
-assemblage info assembly.gfa
+plastr info assembly.gfa
 
 # Two assemblers, one reference, side by side
-assemblage compare spades.gfa mine.gfa -r reference.fasta --html compare.html
+plastr compare spades.gfa mine.gfa -r reference.fasta --html compare.html
 ```
 
-`assemblage scaffold` writes `scaffolds.fasta`, `scaffolds.agp`, `graph.gfa`,
+`plastr scaffold` writes `scaffolds.fasta`, `scaffolds.agp`, `graph.gfa`,
 `segments.csv`, and `report.html` into the output directory.
 
 ---
@@ -103,10 +128,10 @@ One detail worth knowing: minimap2 will carry a single alignment straight across
 a multi-kilobase deletion and record it as one long `D` in the CIGAR. Left
 alone, that hides real structural error *and* inflates genome fraction, because
 the untouched span between alignment start and end counts as covered.
-Assemblage splits alignments at long indels before scoring, which is why its
+Plastr splits alignments at long indels before scoring, which is why its
 genome fraction is lower — and correct — compared to a naive PAF summary.
 
-![Assemblage QC report](docs/images/report-example.png)
+![Plastr QC report](docs/images/report-example.png)
 
 *The HTML report for the demo dataset: headline statistics, Nx and cumulative
 curves, a to-scale reference ideogram with misassembly breakpoints flagged, and
@@ -130,7 +155,7 @@ cannot be placed are kept as unplaced singletons, not dropped.
 reference scaffolding alone. Where the assembly graph contains a path between
 two neighbouring contigs of roughly the estimated gap length, that path's real
 sequence replaces the run of Ns. The sequence comes from your reads, not from
-the reference. Where two plausible paths of similar length exist, Assemblage
+the reference. Where two plausible paths of similar length exist, Plastr
 leaves Ns rather than guessing.
 
 The scaffold plan is then **editable**: drag members to reorder them within or
@@ -155,7 +180,7 @@ back up later.
 
 ## Is it right?
 
-Assemblage is checked against the tools it replaces, on real bacterial
+Plastr is checked against the tools it replaces, on real bacterial
 assemblies rather than on data it generated itself. Full numbers and commands
 are in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
@@ -179,7 +204,7 @@ relocations, and secondary alignments were inflating every reference statistic
 (total aligned length exceeded the assembly's own length). Both are fixed and
 covered by regression tests.
 
-**Scaffolding, scored by QUAST rather than by Assemblage:** 63 contigs became 5
+**Scaffolding, scored by QUAST rather than by Plastr:** 63 contigs became 5
 scaffolds, N50 rose from 444 kb to 5.26 Mb, the chromosome was reconstructed as
 a single 5.26 Mb scaffold, and genome fraction went *up* from 98.57% to 99.57%
 — with **zero misassemblies introduced** and no change in duplication ratio.
@@ -188,7 +213,7 @@ a single 5.26 Mb scaffold, and genome fraction went *up* from 98.57% to 99.57%
 
 ## A note on running it
 
-`assemblage view` starts a small web server bound to `127.0.0.1`, so by default
+`plastr view` starts a small web server bound to `127.0.0.1`, so by default
 it is reachable only from your own machine. It is a desktop tool that happens to
 use a browser for its interface.
 
@@ -202,7 +227,7 @@ need the interface on a remote machine, forward the port over SSH instead:
 ssh -L 8781:127.0.0.1:8781 you@remote     # then open http://127.0.0.1:8781
 ```
 
-Assemblage prints a warning if you bind it anywhere other than loopback.
+Plastr prints a warning if you bind it anywhere other than loopback.
 
 Exports refuse to overwrite existing files unless you ask them to, since the
 output directory is the one place the tool can destroy work you did not create.
@@ -229,7 +254,7 @@ Gzipped input is read transparently. Format detection is automatic;
 Everything the GUI does is available from Python:
 
 ```python
-from assemblage import Project
+from plastr import Project
 
 p = Project()
 p.load("assembly.gfa")
@@ -252,7 +277,7 @@ The HTTP API is documented in [`docs/API.md`](docs/API.md) and browsable at
 ## Development
 
 ```bash
-conda activate assemblage
+conda activate plastr
 python -m pytest tests/ -v
 ```
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from assemblage.core.analysis.operations import (
+from plastr.core.analysis.operations import (
     delete_segments,
     filter_graph,
     merge_path,
@@ -18,9 +18,9 @@ from assemblage.core.analysis.operations import (
     simplify,
     split_segment,
 )
-from assemblage.core.errors import GraphOperationError
-from assemblage.core.model import AssemblyGraph, Link, Segment
-from assemblage.core.sequence import revcomp
+from plastr.core.errors import GraphOperationError
+from plastr.core.model import AssemblyGraph, Link, Segment
+from plastr.core.sequence import revcomp
 
 
 def snapshot(graph: AssemblyGraph):
@@ -470,7 +470,7 @@ class TestMergeSafety:
     def _graph(overlap=55):
         import random
 
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         rng = random.Random(4)
         seq = lambda n: "".join(rng.choice("ACGT") for _ in range(n))  # noqa: E731
@@ -487,8 +487,8 @@ class TestMergeSafety:
         return g
 
     def test_merging_unconnected_segments_is_refused(self):
-        from assemblage.core.analysis.operations import merge_path
-        from assemblage.core.errors import GraphOperationError
+        from plastr.core.analysis.operations import merge_path
+        from plastr.core.errors import GraphOperationError
 
         g = self._graph()
         # walk_sequence would fall back to overlap_default and silently delete
@@ -497,8 +497,8 @@ class TestMergeSafety:
             merge_path(g, [("a", "+"), ("lonely", "+")])
 
     def test_a_boundary_link_keeps_its_overlap_after_a_merge(self):
-        from assemblage.core.analysis.operations import merge_path
-        from assemblage.core.model import Link, Segment
+        from plastr.core.analysis.operations import merge_path
+        from plastr.core.model import Link, Segment
 
         g = self._graph()
         g.add_segment(Segment("d", "A" * 300))
@@ -513,7 +513,7 @@ class TestMergeSafety:
         )
 
     def test_the_merged_sequence_is_the_walk_not_the_concatenation(self):
-        from assemblage.core.analysis.operations import merge_path
+        from plastr.core.analysis.operations import merge_path
 
         g = self._graph()
         expected = g.walk_sequence([("a", "+"), ("b", "+"), ("c", "+")])
@@ -527,8 +527,8 @@ class TestReverseIsUndoable:
 
     @staticmethod
     def _project():
-        from assemblage.core.model import AssemblyGraph, Link, Segment
-        from assemblage.core.project import Project
+        from plastr.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.project import Project
 
         g = AssemblyGraph("r")
         g.add_segment(Segment("a", "AAAACCCGGGTTT"))

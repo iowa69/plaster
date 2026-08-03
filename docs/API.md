@@ -1,4 +1,4 @@
-# Assemblage HTTP API contract
+# Plastr HTTP API contract
 
 All endpoints are under `/api`. Request and response bodies are JSON unless
 stated. Errors return `{"error": "...", "detail": "..."}` with a 4xx/5xx status;
@@ -208,7 +208,7 @@ Returns `{"backend": "blast"|"minimap2", "hits": [{"segment": "ctg_1",
 ---
 
 ## `POST /api/export`
-Body: `{"outdir": "assemblage_out", "what": ["scaffolds","agp","gfa","csv","report","session"]}`
+Body: `{"outdir": "plastr_out", "what": ["scaffolds","agp","gfa","csv","report","session"]}`
 Returns `{"written": [{"kind": "scaffolds", "path": "...", "bytes": 1234}]}`.
 
 ## `GET /api/download/{kind}`

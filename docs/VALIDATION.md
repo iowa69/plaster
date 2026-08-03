@@ -1,7 +1,7 @@
 # Validation
 
-Assemblage is checked against the two tools it sets out to replace, on real
-bacterial assemblies rather than on data Assemblage generated itself. Testing a
+Plastr is checked against the two tools it sets out to replace, on real
+bacterial assemblies rather than on data Plastr generated itself. Testing a
 tool only against its own synthetic fixtures is circular: it confirms the code
 does what it does, not that it is right.
 
@@ -11,12 +11,12 @@ Everything below is reproducible with the commands given.
 
 ## Graph statistics vs. Bandage
 
-`Bandage info` and `assemblage info` were run on the same GFA files.
+`Bandage info` and `plastr info` were run on the same GFA files.
 
 **A 2.88 Mb assembly from the author's own assembler** (`assembly_graph.gfa`,
 94 bp overlaps):
 
-| | Bandage | Assemblage |
+| | Bandage | Plastr |
 |---|---|---|
 | Node count | 514 | 514 |
 | Edge count | 641 | 641 |
@@ -30,7 +30,7 @@ Everything below is reproducible with the commands given.
 
 **A 5.45 Mb *Klebsiella pneumoniae* graph** (127 bp overlaps):
 
-| | Bandage | Assemblage |
+| | Bandage | Plastr |
 |---|---|---|
 | Node count | 125 | 125 |
 | Edge count | 159 | 159 |
@@ -44,18 +44,18 @@ Exact agreement on every statistic both tools report.
 
 ```bash
 Bandage info assembly_graph.gfa
-assemblage info assembly_graph.gfa
+plastr info assembly_graph.gfa
 ```
 
 ---
 
 ## Reference-based statistics vs. QUAST
 
-QUAST 5.x and Assemblage were run on the same contigs and the same closed
+QUAST 5.x and Plastr were run on the same contigs and the same closed
 reference (a *K. pneumoniae* chromosome plus two plasmids, 5,509,378 bp).
-Assemblage was given `--min-contig 500` to match QUAST's default.
+Plastr was given `--min-contig 500` to match QUAST's default.
 
-| | QUAST | Assemblage |
+| | QUAST | Plastr |
 |---|---|---|
 | # contigs | 63 | 63 |
 | Total length | 5,434,937 | 5,434,937 |
@@ -79,7 +79,7 @@ Assemblage was given `--min-contig 500` to match QUAST's default.
 
 ```bash
 quast.py -o quast_out -r reference.fasta segments.fasta
-assemblage qc segments.fasta -r reference.fasta --preset asm5 --min-contig 500
+plastr qc segments.fasta -r reference.fasta --preset asm5 --min-contig 500
 ```
 
 ### Two bugs this comparison found
@@ -89,7 +89,7 @@ Both were real, and neither showed up against synthetic data.
 **Contigs spanning a circular origin were reported as relocations.** Bacterial
 chromosomes and plasmids are circular. A contig that spans the origin ends at
 the last base of the reference and resumes at base 0, which on a linear reading
-looks like a jump of nearly the whole replicon. Assemblage reported three such
+looks like a jump of nearly the whole replicon. Plastr reported three such
 false relocations — one on the chromosome and one on each plasmid — where QUAST
 reported none. Reference sequences are now treated as circular by default, and
 the distance between two alignment blocks is measured the short way round;
@@ -118,7 +118,7 @@ largest alignment, total aligned length, and — the number that matters most �
 
 Two metrics differ slightly on three of the six:
 
-| genome | metric | QUAST | Assemblage |
+| genome | metric | QUAST | Plastr |
 |---|---|---|---|
 | ERR10447223 | # local misassemblies | 2 | 1 |
 | ERR10447223 | mismatches / 100 kb | 0.13 | 0.04 |
@@ -131,7 +131,7 @@ These are the two most alignment-sensitive statistics, and the differences are
 what you get from running a different aligner configuration: a local
 misassembly is defined by a reference gap between 200 bp and 1 kb, so a block
 boundary shifting by a few tens of bases moves an event across the threshold.
-Assemblage reads slightly low on both, consistently. Closing the gap entirely
+Plastr reads slightly low on both, consistently. Closing the gap entirely
 would mean reproducing QUAST's exact aligner invocation, which is not a goal;
 what matters is that the structural verdict — how many misassemblies, how much
 of the genome is covered, how contiguous the assembly is — is identical.
@@ -140,12 +140,12 @@ of the genome is covered, how contiguous the assembly is — is identical.
 
 ## Scaffolding, judged by QUAST
 
-The headline feature evaluated by an independent tool. Assemblage scaffolded the
+The headline feature evaluated by an independent tool. Plastr scaffolded the
 *K. pneumoniae* graph against its reference, and QUAST then scored the contigs
 and the resulting scaffolds side by side.
 
 ```bash
-assemblage scaffold assembly_graph.gfa -r reference.fasta --preset asm5 -o out/
+plastr scaffold assembly_graph.gfa -r reference.fasta --preset asm5 -o out/
 quast.py -o quast_out -r reference.fasta segments.fasta out/scaffolds.fasta
 ```
 
@@ -278,7 +278,7 @@ Rendering that graph costs 0.7 ms per frame.
 403 tests, running in under 3 seconds:
 
 ```bash
-conda activate assemblage
+conda activate plastr
 python -m pytest tests/ -v
 ```
 

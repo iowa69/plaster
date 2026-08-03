@@ -1,0 +1,72 @@
+{% set name = "plastr" %}
+{% set version = "1.0.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  # Building from a local checkout. For a bioconda submission this becomes a
+  # url: + sha256: pointing at a GitHub release tarball.
+  path: ..
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  entry_points:
+    - plastr = plastr.cli:main
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=68
+  run:
+    - python >=3.10
+    - fastapi >=0.110
+    - uvicorn >=0.27
+    - jinja2 >=3.1
+    # Alignment. mappy is minimap2's Python binding; the binary is the fallback
+    # and is also what the search panel uses when BLAST is absent.
+    - mappy >=2.24
+    - minimap2 >=2.24
+    # Optional at runtime, but the sequence-search panel is much better with it
+    # and it costs little, so it is a hard dependency here.
+    - blast >=2.13
+
+test:
+  imports:
+    - plastr
+    - plastr.core.model
+    - plastr.core.scaffold.builder
+  commands:
+    - plastr --version
+    - plastr --help
+    - plastr doctor
+
+about:
+  home: https://github.com/iowa69/plaster
+  license: MIT
+  license_family: MIT
+  license_file: ../LICENSE
+  summary: "Assembly graph studio: Bandage-style visualisation, QUAST-style QC, and reference-guided scaffolding you can export."
+  description: |
+    Plastr is a plaster for your assembly. It combines Bandage-style assembly
+    graph visualisation with QUAST-style reference-based quality assessment,
+    then lets you act on what you find: break misassembled contigs, order and
+    orient the rest against a reference, and fill the gaps with real sequence
+    recovered from the assembly graph rather than with runs of N.
+
+    Exports scaffolds as FASTA with a matching AGP, the edited graph as GFA, a
+    per-segment CSV, and a self-contained HTML report.
+
+    Validated against Bandage and QUAST on real bacterial genomes: graph
+    statistics match Bandage exactly, and reference statistics match QUAST
+    across six closed Klebsiella pneumoniae genomes.
+  doc_url: https://github.com/iowa69/plaster#readme
+  dev_url: https://github.com/iowa69/plaster
+
+extra:
+  recipe-maintainers:
+    - iowa69

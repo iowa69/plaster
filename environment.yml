@@ -1,4 +1,4 @@
-name: assemblage
+name: plastr
 channels:
   - conda-forge
   - bioconda

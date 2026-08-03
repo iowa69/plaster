@@ -1,13 +1,13 @@
 cff-version: 1.2.0
-title: "Assemblage: an interactive assembly graph studio"
+title: "Plastr: an interactive assembly graph studio"
 message: "If you use this software, please cite it as below."
 type: software
 authors:
   - family-names: Lorenzin
     given-names: Giovanni
-repository-code: "https://github.com/iowa69/assemblage"
+repository-code: "https://github.com/iowa69/plaster"
 abstract: >-
-  Assemblage combines Bandage-style assembly graph visualisation with
+  Plastr combines Bandage-style assembly graph visualisation with
   QUAST-style reference-based quality assessment, and adds reference-guided
   scaffolding whose gaps are filled with real sequence recovered from the
   assembly graph. It exports scaffolds as FASTA with a matching AGP.

@@ -1,7 +1,7 @@
 """Tests for the double-stranded graph model.
 
 The convention (from the module docstring and docs/API.md) is the subtle part of
-Assemblage, so it is pinned down here in detail: a link and its reverse form are
+Plastr, so it is pinned down here in detail: a link and its reverse form are
 one physical connection, and the physical ends a link joins follow from the two
 orientations.
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from assemblage.core.errors import GraphOperationError
-from assemblage.core.model import (
+from plastr.core.errors import GraphOperationError
+from plastr.core.model import (
     AssemblyGraph,
     Link,
     Path,
@@ -295,7 +295,7 @@ class TestWalkSequence:
         assert walk.count("TTCCGGAACC") == 1
 
     def test_reverse_orientation_revcomps_before_trimming(self, tiny_graph):
-        from assemblage.core.sequence import revcomp
+        from plastr.core.sequence import revcomp
 
         # C- -> B- -> A- is the same physical walk read the other way round.
         walk = tiny_graph.walk_sequence([("C", "-"), ("B", "-"), ("A", "-")])

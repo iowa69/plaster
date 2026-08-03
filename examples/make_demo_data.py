@@ -22,8 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from assemblage.core.io.fasta import write_fasta  # noqa: E402
-from assemblage.core.sequence import revcomp  # noqa: E402
+from plastr.core.io.fasta import write_fasta  # noqa: E402
+from plastr.core.sequence import revcomp  # noqa: E402
 
 SEED = 20260803
 CHROM_LEN = 160_000

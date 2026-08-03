@@ -10,7 +10,7 @@ htmlcov/
 # generated demo data and outputs
 examples/demo/
 examples/toy.gfa
-assemblage_out/
+plastr_out/
 *.mmi
 
 .DS_Store

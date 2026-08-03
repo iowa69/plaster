@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import pytest
 
-from assemblage.core.analysis.metrics import (
+from plastr.core.analysis.metrics import (
     AssemblyMetrics,
     auN,
     compare_metrics,
     compute_metrics,
     nx_stat,
 )
-from assemblage.core.model import AssemblyGraph, Link, Segment
+from plastr.core.model import AssemblyGraph, Link, Segment
 
 LENGTHS = [100, 200, 300, 400]
 
@@ -280,7 +280,7 @@ class TestWeightedMedianDepth:
 
     @staticmethod
     def _graph(pairs):
-        from assemblage.core.model import AssemblyGraph, Segment
+        from plastr.core.model import AssemblyGraph, Segment
 
         g = AssemblyGraph("depth")
         for i, (depth, length) in enumerate(pairs):
@@ -288,7 +288,7 @@ class TestWeightedMedianDepth:
         return g
 
     def test_many_short_nodes_do_not_dominate(self):
-        from assemblage.core.analysis.metrics import compute_metrics
+        from plastr.core.analysis.metrics import compute_metrics
 
         # Nine 100 bp nodes at 100x, one 100 kb node at 10x. Most *bases* are
         # at 10x, so that is the median; a plain median over nodes would say 100.
@@ -298,14 +298,14 @@ class TestWeightedMedianDepth:
         assert m.mean_depth == pytest.approx(91.0)
 
     def test_a_single_segment_is_its_own_median(self):
-        from assemblage.core.analysis.metrics import compute_metrics
+        from plastr.core.analysis.metrics import compute_metrics
 
         m = compute_metrics(self._graph([(33.5, 5000)]))
         assert m.median_depth == 33.5
 
     def test_no_depth_information_gives_none(self):
-        from assemblage.core.analysis.metrics import compute_metrics
-        from assemblage.core.model import AssemblyGraph, Segment
+        from plastr.core.analysis.metrics import compute_metrics
+        from plastr.core.model import AssemblyGraph, Segment
 
         g = AssemblyGraph("nodepth")
         g.add_segment(Segment("a", "ACGT" * 100))
@@ -322,7 +322,7 @@ class TestFilteredTopology:
 
     @staticmethod
     def _chain():
-        from assemblage.core.model import AssemblyGraph, Link, Segment
+        from plastr.core.model import AssemblyGraph, Link, Segment
 
         g = AssemblyGraph("chain")
         # big -- tiny -- big : filtering the tiny node splits the component
@@ -334,7 +334,7 @@ class TestFilteredTopology:
         return g
 
     def test_unfiltered_topology_covers_the_whole_graph(self):
-        from assemblage.core.analysis.metrics import compute_metrics
+        from plastr.core.analysis.metrics import compute_metrics
 
         m = compute_metrics(self._chain())
         assert m.num_contigs == 3
@@ -343,7 +343,7 @@ class TestFilteredTopology:
         assert m.dead_ends == 2  # the two outer ends
 
     def test_filtering_out_a_connector_splits_the_component(self):
-        from assemblage.core.analysis.metrics import compute_metrics
+        from plastr.core.analysis.metrics import compute_metrics
 
         m = compute_metrics(self._chain(), min_length=1000)
         assert m.num_contigs == 2

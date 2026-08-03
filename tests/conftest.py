@@ -1,4 +1,4 @@
-"""Fixtures shared by the Assemblage test suite.
+"""Fixtures shared by the Plastr test suite.
 
 Two families of fixture live here.
 
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from assemblage.core.analysis.align import _copy_alignment, alignment_backend
-from assemblage.core.model import AssemblyGraph, Link, Segment
+from plastr.core.analysis.align import _copy_alignment, alignment_backend
+from plastr.core.model import AssemblyGraph, Link, Segment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEMO_SCRIPT = PROJECT_ROOT / "examples" / "make_demo_data.py"
@@ -122,7 +122,7 @@ def chain_graph() -> AssemblyGraph:
 @pytest.fixture(scope="session")
 def demo_dir(tmp_path_factory) -> Path:
     """Run ``examples/make_demo_data.py`` once into a session tmp directory."""
-    out = tmp_path_factory.mktemp("assemblage_demo")
+    out = tmp_path_factory.mktemp("plastr_demo")
     proc = subprocess.run(
         [sys.executable, str(DEMO_SCRIPT), str(out)],
         capture_output=True,
@@ -160,14 +160,14 @@ def demo_truth(demo_paths) -> dict:
 @pytest.fixture
 def demo_graph(demo_paths) -> AssemblyGraph:
     """A freshly loaded demo graph -- function scoped because tests mutate it."""
-    from assemblage.core.io.loader import load_graph
+    from plastr.core.io.loader import load_graph
 
     return load_graph(str(demo_paths["gfa"]))
 
 
 @pytest.fixture(scope="session")
 def demo_reference_lengths(demo_paths) -> dict[str, int]:
-    from assemblage.core.analysis.align import reference_lengths
+    from plastr.core.analysis.align import reference_lengths
 
     return reference_lengths(str(demo_paths["reference"]))
 
@@ -177,8 +177,8 @@ def _demo_alignments_session(demo_paths):
     """Align the demo contigs once; every test gets copies of these."""
     if not HAVE_ALIGNER:
         pytest.skip("no alignment backend")
-    from assemblage.core.analysis.align import align_graph
-    from assemblage.core.io.loader import load_graph
+    from plastr.core.analysis.align import align_graph
+    from plastr.core.io.loader import load_graph
 
     graph = load_graph(str(demo_paths["gfa"]))
     return align_graph(graph, str(demo_paths["reference"]))
@@ -192,8 +192,8 @@ def demo_alignments(_demo_alignments_session):
 
 @pytest.fixture(scope="session")
 def demo_report(_demo_alignments_session, demo_reference_lengths, demo_paths):
-    from assemblage.core.analysis.misassembly import evaluate_against_reference
-    from assemblage.core.io.loader import load_graph
+    from plastr.core.analysis.misassembly import evaluate_against_reference
+    from plastr.core.io.loader import load_graph
 
     graph = load_graph(str(demo_paths["gfa"]))
     contig_lengths = {n: s.length for n, s in graph.segments.items()}
