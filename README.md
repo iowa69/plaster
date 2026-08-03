@@ -6,7 +6,7 @@
 
 <p align="center">
   <em>A plaster for your assembly.</em><br>
-  Bandage-style visualisation, QUAST-style quality assessment, and
+  GFA visualisation,  Assembly quality assessment, and
   reference-guided scaffolding whose output you can actually use downstream.
 </p>
 
@@ -102,7 +102,7 @@ plastr compare spades.gfa mine.gfa -r reference.fasta --html compare.html
 ### Sees the graph
 
 Segments are drawn as length-proportional polylines with depth-scaled width, in
-the double-stranded convention Bandage users expect. Colour by depth, GC,
+the double-stranded convention users expect. Colour by depth, GC,
 length, connected component, reference chromosome, or search hit. Pan, zoom,
 box-select, drag.
 
