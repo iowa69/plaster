@@ -16,3 +16,6 @@ assemblage_out/
 .DS_Store
 .idea/
 .vscode/
+
+# browser-automation artefacts from verification runs
+.playwright-mcp/

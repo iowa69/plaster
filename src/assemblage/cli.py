@@ -301,6 +301,74 @@ def cmd_search(args) -> int:
     return 0
 
 
+def cmd_doctor(_args) -> int:
+    """Report what is installed and what each missing piece would cost you."""
+    import shutil
+    from pathlib import Path
+
+    print(BANNER)
+    ok = True
+
+    def line(label: str, good: bool, detail: str) -> None:
+        mark = "ok  " if good else "MISS"
+        print(f"  [{mark}] {label:<22} {detail}")
+
+    print("  Environment\n  " + "-" * 60)
+    line("python", True, sys.version.split()[0])
+    line("assemblage", True, __version__)
+
+    backend = align_mod.alignment_backend()
+    if backend == "none":
+        ok = False
+        line(
+            "minimap2 / mappy", False,
+            "no reference alignment: no genome fraction, misassemblies, or "
+            "reference scaffolding",
+        )
+    else:
+        line("minimap2 / mappy", True, f"using {backend}")
+
+    if search_mod.blast_available():
+        line("blast", True, "sequence search enabled")
+    else:
+        line("blast", True, "not found -- search will fall back to minimap2")
+
+    try:
+        import uvicorn  # noqa: F401
+        import fastapi  # noqa: F401
+
+        line("web service", True, "fastapi + uvicorn available")
+    except ImportError:
+        ok = False
+        line("web service", False, "'assemblage view' will not start")
+
+    web_dir = Path(__file__).resolve().parent / "web"
+    has_ui = (web_dir / "index.html").exists()
+    if has_ui:
+        line("web interface", True, str(web_dir))
+    else:
+        ok = False
+        line("web interface", False, f"missing files under {web_dir}")
+
+    try:
+        from .core.report import build_report  # noqa: F401
+
+        line("html reports", True, "available")
+    except ImportError as exc:
+        ok = False
+        line("html reports", False, str(exc))
+
+    print()
+    if ok:
+        print("  Everything needed is installed.\n")
+        print("  Try:  python examples/make_demo_data.py")
+        print("        assemblage view examples/demo/assembly.gfa -r examples/demo/reference.fasta\n")
+    else:
+        print("  Some pieces are missing. The conda environment installs all of them:\n")
+        print("        conda env create -f environment.yml && conda activate assemblage\n")
+    return 0 if ok else 1
+
+
 def cmd_compare(args) -> int:
     """Evaluate several assemblies side by side, QUAST-style."""
     from .core.analysis.metrics import compare_metrics
@@ -505,6 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
     p_cmp.add_argument("--html", help="write a comparison report here")
     p_cmp.set_defaults(func=cmd_compare)
+
+    p_doc = sub.add_parser("doctor", help="check that everything is installed")
+    p_doc.set_defaults(func=cmd_doctor)
 
     p_in = sub.add_parser("info", help="quick summary of a graph")
     _add_common(p_in)

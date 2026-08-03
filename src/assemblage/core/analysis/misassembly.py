@@ -120,7 +120,11 @@ def classify_misassemblies(
 
     results: list[Misassembly] = []
     for contig, hits in by_contig.items():
-        blocks = merge_collinear(hits)
+        # Merge only blocks that are genuinely contiguous -- the ones a small
+        # indel split apart. A wider window would absorb the very discrepancies
+        # we are here to find: at the placement default of 10 kb, every forward
+        # relocation shorter than that becomes invisible.
+        blocks = merge_collinear(hits, max_gap=LOCAL_THRESHOLD, max_overlap=LOCAL_THRESHOLD)
         blocks = [b for b in blocks if b.q_span >= min_block]
         if len(blocks) < 2:
             continue
@@ -271,7 +275,12 @@ def evaluate_against_reference(
     # --- aligned block statistics (NA50 / NGA50) ---
     block_lengths: list[int] = []
     for contig, hits in _group(primary).items():
-        for block in merge_collinear(hits):
+        # Aligned blocks are split at extensive misassemblies but not at local
+        # ones, so a chimeric contig loses credit for its full length while a
+        # contig with a small indel keeps it.
+        for block in merge_collinear(
+            hits, max_gap=EXTENSIVE_THRESHOLD, max_overlap=EXTENSIVE_THRESHOLD
+        ):
             if block.q_span >= min_block:
                 block_lengths.append(block.q_span)
     if block_lengths:

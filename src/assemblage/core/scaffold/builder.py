@@ -87,8 +87,12 @@ def build_scaffolds(
                 break
 
             # Either real bridging sequence from the graph, or a run of Ns.
+            joined_by_graph = False
             if member.bridge_path or member.gap_after == 0:
-                bridge = _bridge_sequence_for(graph, members, index, member)
+                bridge, valid = _bridge_sequence_for(
+                    graph, members, index, member, out.warnings
+                )
+                joined_by_graph = valid
                 if bridge:
                     pieces.append(bridge)
                     end = position + len(bridge) - 1
@@ -111,7 +115,11 @@ def build_scaffolds(
                     out.bridged_bases += len(bridge)
                     position = end + 1
                     part += 1
-                continue
+                if joined_by_graph:
+                    # Either bridged, or genuinely adjacent: no gap belongs here.
+                    continue
+                # The walk was broken, so fall through and leave an honest gap
+                # rather than butting the two contigs together.
 
             gap = max(int(member.gap_after), min_gap)
             pieces.append("N" * gap)
@@ -151,11 +159,33 @@ def _bridge_sequence_for(
     members: list,
     index: int,
     member,
-) -> str:
-    """Recompute the bridging sequence so it always matches the current graph."""
+    warnings: list[str],
+) -> tuple[str, bool]:
+    """Recompute the bridging sequence, returning ``(sequence, walk_is_real)``.
+
+    A bridge is only meaningful if the graph really connects every step of the
+    walk. Editing the plan by hand -- flipping a contig, reordering members --
+    can leave a stale ``bridge_path`` that no longer describes a real path, and
+    splicing its sequence in anyway would invent a join the assembly does not
+    support. Such a bridge is dropped and reported instead.
+    """
     from .graph_bridge import _bridge_sequence
 
     nxt = members[index + 1]
+    walk = [
+        (member.segment, member.orientation),
+        *member.bridge_path,
+        (nxt.segment, nxt.orientation),
+    ]
+    for (a_name, a_or), (b_name, b_or) in zip(walk, walk[1:]):
+        if not graph.has_link(a_name, a_or, b_name, b_or):
+            warnings.append(
+                f"{member.segment}{member.orientation} -> {nxt.segment}{nxt.orientation}: "
+                "the graph does not connect this walk, so no sequence was spliced in "
+                "and a gap was left instead"
+            )
+            return "", False
+
     try:
         seq = _bridge_sequence(
             graph,
@@ -164,8 +194,8 @@ def _bridge_sequence_for(
             (nxt.segment, nxt.orientation),
         )
     except Exception:
-        return ""
-    return seq or ""
+        return "", False
+    return (seq or ""), True
 
 
 def _verify(built: BuiltScaffolds) -> None:

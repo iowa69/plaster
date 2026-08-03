@@ -198,7 +198,7 @@ footer.doc {
 
 /* ---------- print ---------- */
 @media print {
-  body { background: #fff; font-size: 10.5pt; }
+  body { background: #fff; font-size: 10pt; }
   .page { max-width: none; box-shadow: none; padding: 0; }
   nav.tabs { display: none; }
   .panel[hidden] { display: block !important; }
@@ -210,6 +210,21 @@ footer.doc {
   tr, .card, .figure, .scaffold-block { break-inside: avoid; }
   thead { display: table-header-group; }
   a { text-decoration: none; color: inherit; }
+  /* Predictable two-column layouts at paper width. */
+  .meta { grid-template-columns: 1fr 1fr; gap: 3px 22px; }
+  .grid2 { grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+  .cards { grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .figure { margin: 10px 0 16px; }
+  /* The SVGs shrink to fit the page, so scale their type up to compensate. */
+  svg.chart .tick    { font-size: 15px; }
+  svg.chart .axlabel { font-size: 16px; }
+  svg.chart .note    { font-size: 15px; }
+  svg.chart .idlabel { font-size: 15px; }
+  svg.chart .idpct   { font-size: 14px; }
+  svg.chart .idsize  { font-size: 12px; }
+  .card, .idtrack, svg.chart .idcov, .badge {
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
 }
 @page { margin: 14mm; }
 </style>
@@ -290,10 +305,14 @@ footer.doc {
 
   {% if scaffold and charts.scaffold_n50 %}
   <h2>Contiguity after scaffolding</h2>
-  <figure class="figure">
-    {{ charts.scaffold_n50 | safe }}
-    <figcaption><span class="cap-title">N50 before and after scaffolding.</span></figcaption>
-  </figure>
+  <div class="grid2">
+    <figure class="figure">
+      {{ charts.scaffold_n50 | safe }}
+      <figcaption><span class="cap-title">N50 before and after scaffolding.</span>
+        {{ scaffold.scaffolds | length | fmt_int }} scaffold(s) built from
+        {{ metrics.num_contigs | fmt_int }} contigs.</figcaption>
+    </figure>
+  </div>
   {% endif %}
 </section>
 

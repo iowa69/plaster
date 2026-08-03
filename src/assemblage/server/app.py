@@ -438,9 +438,23 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
     # ------------------------------------------------------------ static UI
 
     if WEB_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+        app.mount("/", _NoCacheStatic(directory=str(WEB_DIR), html=True), name="web")
 
     return app
+
+
+class _NoCacheStatic(StaticFiles):
+    """Serve the UI with revalidation forced.
+
+    The interface is a handful of local files, so caching saves nothing, and a
+    stale cached ``index.html`` or ES module after an upgrade produces a broken
+    page that a normal reload does not fix.
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 def _text_download(text: str, filename: str, media_type: str = "text/plain"):

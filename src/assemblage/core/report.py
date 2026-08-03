@@ -639,9 +639,11 @@ def svg_scaffold_n50(before: int | None, after: int | None) -> str:
     values = [("Contig N50", before or 0), ("Scaffold N50", after or 0)]
     top = max(v for _l, v in values)
     if top <= 0:
-        return _empty_chart("no scaffold lengths to compare", 140, 400)
+        return _empty_chart("no scaffold lengths to compare", 160, 500)
 
-    plot = _Plot(width=400, height=230, margin=(16, 16, 42, 76), title="N50 change")
+    # Same natural width as the other paired charts, so every chart in the
+    # report shrinks by the same factor on paper and the type stays consistent.
+    plot = _Plot(width=500, height=270, margin=(18, 18, 46, 76), title="N50 change")
     plot.set_domain(0, 1, 0, top * 1.18)
     plot.frame([], _nice_ticks(0, top * 1.18, 4), y_label="N50 (bp)")
 
@@ -649,7 +651,7 @@ def svg_scaffold_n50(before: int | None, after: int | None) -> str:
     slot = plot.plot_w / len(values)
     for i, (label, value) in enumerate(values):
         centre = plot.left + slot * (i + 0.5)
-        bar_w = min(72.0, slot * 0.5)
+        bar_w = min(88.0, slot * 0.5)
         y = plot.sy(value)
         plot.add(
             f'<rect class="bar" x="{_round(centre - bar_w / 2)}" y="{y}" '

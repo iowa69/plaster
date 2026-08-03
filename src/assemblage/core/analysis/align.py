@@ -361,14 +361,28 @@ def best_placements(
 def merge_collinear(
     hits: Sequence[Alignment],
     max_gap: int = 10_000,
+    max_overlap: int | None = None,
 ) -> list[Alignment]:
     """Join alignment blocks of one query that continue on the same reference.
 
     Blocks qualify when they share a reference and strand and advance in both
-    query and reference coordinates by less than ``max_gap``.
+    query and reference coordinates by no more than ``max_gap``, and step
+    backwards by no more than ``max_overlap`` (which defaults to ``max_gap``).
+
+    The window matters and callers should choose it deliberately. Placing a
+    contig wants a *wide* window, so a contig split into blocks by a deletion
+    still yields one placement spanning its true extent. Classifying
+    misassemblies wants a *narrow* one, because every gap the merge absorbs is a
+    discrepancy that then cannot be reported.
     """
     if not hits:
         return []
+    if max_overlap is None:
+        # Blocks routinely overlap a little where an alignment was split, but a
+        # large step *backwards* on the reference is a rearrangement, not a
+        # continuation -- so the backward tolerance stays tight even when the
+        # forward window is wide.
+        max_overlap = min(500, max_gap)
     groups: dict[tuple[str, str, int], list[Alignment]] = {}
     for h in hits:
         groups.setdefault((h.query, h.ref, h.strand), []).append(h)
@@ -383,7 +397,7 @@ def merge_collinear(
                 r_gap = nxt.r_st - current.r_en
             else:
                 r_gap = current.r_st - nxt.r_en
-            if -500 <= q_gap <= max_gap and -500 <= r_gap <= max_gap:
+            if -max_overlap <= q_gap <= max_gap and -max_overlap <= r_gap <= max_gap:
                 current.q_en = max(current.q_en, nxt.q_en)
                 current.r_st = min(current.r_st, nxt.r_st)
                 current.r_en = max(current.r_en, nxt.r_en)
