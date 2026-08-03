@@ -9,7 +9,7 @@ description = "Interactive assembly graph studio: Bandage-style visualisation, Q
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Assemblage contributors" }]
+authors = [{ name = "Giovanni Lorenzin" }]
 keywords = ["bioinformatics", "assembly", "genome", "graph", "gfa", "scaffolding", "qc"]
 classifiers = [
   "Intended Audience :: Science/Research",
@@ -32,7 +32,8 @@ dev = ["pytest>=7.4", "httpx>=0.26"]
 assemblage = "assemblage.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/assemblage/assemblage"
+Homepage = "https://github.com/iowa69/assemblage"
+Issues = "https://github.com/iowa69/assemblage/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

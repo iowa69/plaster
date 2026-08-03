@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+title: "Assemblage: an interactive assembly graph studio"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Lorenzin
+    given-names: Giovanni
+repository-code: "https://github.com/iowa69/assemblage"
+abstract: >-
+  Assemblage combines Bandage-style assembly graph visualisation with
+  QUAST-style reference-based quality assessment, and adds reference-guided
+  scaffolding whose gaps are filled with real sequence recovered from the
+  assembly graph. It exports scaffolds as FASTA with a matching AGP.
+keywords:
+  - bioinformatics
+  - genome assembly
+  - assembly graph
+  - GFA
+  - scaffolding
+  - quality assessment
+license: MIT
+version: 1.0.0

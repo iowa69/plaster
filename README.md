@@ -17,7 +17,7 @@ recovered from the graph, and export scaffolds plus a matching AGP.
 ## Install
 
 ```bash
-git clone <this repo> assemblage && cd assemblage
+git clone https://github.com/iowa69/assemblage.git && cd assemblage
 conda env create -f environment.yml
 conda activate assemblage
 ```
