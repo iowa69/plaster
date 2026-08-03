@@ -311,7 +311,6 @@ def cmd_search(args) -> int:
 
 def cmd_doctor(_args) -> int:
     """Report what is installed and what each missing piece would cost you."""
-    import shutil
     from pathlib import Path
 
     print(BANNER)
@@ -406,7 +405,6 @@ def cmd_compare(args) -> int:
     named = {label: p.metrics() for label, p in projects.items()}
     table = compare_metrics(named)
 
-    widths = [max(28, *(len(c) + 2 for c in table["columns"]))] if table["columns"] else [28]
     col_width = max(14, max((len(c) for c in table["columns"]), default=14) + 2)
     print("\n  Comparison")
     print("  " + "-" * (30 + col_width * len(table["columns"])))

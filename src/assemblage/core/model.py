@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 from .errors import GraphOperationError
-from .sequence import flip, gc_content, oriented, revcomp
+from .sequence import flip, gc_content, oriented
 
 # ---------------------------------------------------------------------------
 # Segments and links
