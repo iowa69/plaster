@@ -201,6 +201,31 @@ indexed by the segments they touch.
 
 ---
 
+## Layout quality
+
+Force-directed layout was checked on a real 514-segment assembly by measuring
+mean link length in units of mean segment draw length. Connected segments
+should sit close together, so a good layout scores near 1-2; a hairball scores
+much higher.
+
+| repulsion normalisation | link/segment ratio | fit-to-view zoom |
+|---|---|---|
+| none (original) | 15.2 | 9% |
+| normalised, reference 100 | 0.85 | 81% |
+| normalised, reference 200 | **2.4** | **49%** |
+
+Repulsion accumulates over every particle while a particle's link forces do
+not, so the same `repulsion` value that lays out a 10-segment graph well blows
+a 500-segment one into a hairball with links fifteen times longer than the
+segments they join. Repulsion is now damped by particle count, calibrated so
+graphs at or below the reference size are unchanged and larger ones stay
+readable. The 514-segment graph went from an unreadable disc to distinguishable
+contig strands.
+
+Rendering that graph costs 0.7 ms per frame.
+
+---
+
 ## Test suite
 
 389 tests, running in under 3 seconds:

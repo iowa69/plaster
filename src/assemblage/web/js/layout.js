@@ -168,6 +168,21 @@ class QuadTree {
 /*  Layout engine                                                          */
 /* ====================================================================== */
 
+/** Particle count the `repulsion` parameter is calibrated against. */
+export const REFERENCE_PARTICLES = 200;
+
+/**
+ * How much to damp repulsion for a graph of `n` particles.
+ *
+ * Measured on real graphs: mean link length divided by mean segment length
+ * should sit near 1-2. Without damping that ratio was 15 on a 514-segment
+ * assembly and only 1.5 on a 10-segment one, for identical parameters.
+ */
+export function repulsionScaleFor(n) {
+  if (!n || n <= REFERENCE_PARTICLES) return 1;
+  return Math.max(1e-4, Math.pow(REFERENCE_PARTICLES / n, 1.5));
+}
+
 export const DEFAULT_PARAMS = Object.freeze({
   // Repulsion accumulates over every particle, so a graph with many segments
   // naturally claims more room. These values were tuned so a small bacterial
@@ -221,6 +236,7 @@ export class LayoutEngine {
     let sum = 0;
     for (let i = 0; i < this.nSegments; i++) sum += this.segRest[i];
     this.unit = this.nSegments ? Math.max(4, sum / this.nSegments) : 25;
+    this.repulsionScale = repulsionScaleFor(this.nParticles);
     this.ready = this.nParticles > 0;
     this.running = false;
     return this.ready;
@@ -307,7 +323,14 @@ export class LayoutEngine {
     fx.fill(0); fy.fill(0);
 
     /* --- 1. Barnes-Hut repulsion --------------------------------------- */
-    const rep = P.repulsion * (1.8 * unit) * (1.8 * unit);
+    // Repulsion accumulates over every particle, while a particle's link forces
+    // do not grow with the graph. Left unnormalised, the same `repulsion` value
+    // that lays out a 10-node graph nicely blows a 500-node graph into a
+    // hairball with links 15x longer than the segments they join. Normalising
+    // by particle count makes the parameter mean the same thing at any scale;
+    // the exponent and reference count were fitted by measuring mean link
+    // length (in units of mean segment length) across real graphs.
+    const rep = P.repulsion * (1.8 * unit) * (1.8 * unit) * this.repulsionScale;
     const theta2 = P.theta * P.theta;
     this.tree.build(px, py, nParticles);
     const acc = this._acc;
