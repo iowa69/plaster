@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assemblage"
+version = "1.0.0"
+description = "Interactive assembly graph studio: Bandage-style visualisation, QUAST-style QC, and reference-guided scaffolding you can export."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Assemblage contributors" }]
+keywords = ["bioinformatics", "assembly", "genome", "graph", "gfa", "scaffolding", "qc"]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+align = ["mappy>=2.24"]
+dev = ["pytest>=7.4", "httpx>=0.26"]
+
+[project.scripts]
+assemblage = "assemblage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/assemblage/assemblage"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+assemblage = ["web/**/*", "templates/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,24 @@
+name: assemblage
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  # web service
+  - fastapi>=0.110
+  - uvicorn>=0.27
+  - python-multipart>=0.0.9
+  - jinja2>=3.1
+  # analysis
+  - numpy>=1.24
+  - scipy>=1.10
+  # alignment: mappy is the minimap2 Python binding; the CLI is a fallback
+  - minimap2>=2.24
+  - mappy>=2.24
+  # optional but pulled in because the search panel is much better with it
+  - blast>=2.13
+  # tests
+  - pytest>=7.4
+  - pip:
+      - -e .

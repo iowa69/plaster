@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# generated demo data and outputs
+examples/demo/
+examples/toy.gfa
+assemblage_out/
+*.mmi
+
+.DS_Store
+.idea/
+.vscode/
