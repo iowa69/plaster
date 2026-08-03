@@ -25,12 +25,17 @@ conda activate assemblage
 That is the whole install. It pulls in minimap2, mappy, BLAST, and the web
 service, and installs the `assemblage` command.
 
-Verify it works, and generate a small demo dataset with known errors built in:
+Check that everything is present, then generate a small demo dataset with known
+errors built into it:
 
 ```bash
+assemblage doctor
 python examples/make_demo_data.py
 assemblage qc examples/demo/assembly.gfa -r examples/demo/reference.fasta --preset asm5
 ```
+
+`assemblage doctor` reports what is installed and, for anything missing, what
+you lose without it.
 
 ## Use it
 
@@ -57,6 +62,9 @@ assemblage search assembly.gfa --query gene.fasta
 
 # Quick look
 assemblage info assembly.gfa
+
+# Two assemblers, one reference, side by side
+assemblage compare spades.gfa mine.gfa -r reference.fasta --html compare.html
 ```
 
 `assemblage scaffold` writes `scaffolds.fasta`, `scaffolds.agp`, `graph.gfa`,
