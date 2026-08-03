@@ -152,26 +152,43 @@ quast.py -o quast_out -r reference.fasta segments.fasta out/scaffolds.fasta
 | | contigs | scaffolds |
 |---|---|---|
 | # contigs | 63 | **5** |
-| Largest contig | 812,461 | **5,259,000** |
-| N50 | 444,072 | **5,259,000** |
-| NGA50 | 444,072 | **5,241,626** |
-| Genome fraction (%) | 98.571 | **99.570** |
-| Duplication ratio | 1.001 | 1.001 |
+| Total length | 5,434,937 | 5,504,709 |
+| Largest contig | 812,461 | **5,255,698** |
+| N50 | 444,072 | **5,255,698** |
+| NGA50 | 444,072 | **5,238,277** |
+| Genome fraction (%) | 98.571 | **99.565** |
+| Duplication ratio | 1.001 | **1.000** |
 | **# misassemblies** | 0 | **0** |
-| # local misassemblies | 0 | 0 |
-| mismatches / 100 kb | 0.28 | 2.28 |
-| indels / 100 kb | 0.00 | 1.55 |
+| # local misassemblies | 0 | 1 |
+| mismatches / 100 kb | 0.28 | 2.04 |
+| indels / 100 kb | 0.00 | 0.62 |
 
 N50 improved 11.8-fold and the chromosome was reconstructed as a single
-5.26 Mb scaffold, **with no misassemblies introduced** and no increase in
-duplication. Genome fraction *rose* by one percentage point, because 48 gaps
-were closed with 58 kb of real sequence recovered from the graph rather than
-filled with Ns.
+5.26 Mb scaffold, **with no misassemblies introduced** and duplication ratio
+at 1.000. Genome fraction *rose* by one percentage point, because 48 gaps were
+closed with 58 kb of real sequence recovered from the graph rather than filled
+with Ns.
 
-The small rise in mismatch and indel rate is expected and is not degradation:
-the newly incorporated bridge sequence had not previously been aligned to
-anything, and it carries the assembler's own error rate. 2.28 mismatches per
+The residual mismatch and indel rate is the assembler's own error rate in
+sequence that had not previously been aligned to anything: 2.04 mismatches per
 100 kb is 99.998% identity.
+
+### The bug this table used to hide
+
+An earlier version of this table read 5,510,805 bp, 2.28 mismatches and 1.55
+indels per 100 kb, and the rise was explained away as the bridge sequence
+carrying the assembler's error rate. That explanation was wrong. The scaffold
+builder was writing every contig in full, including the bases it shared with
+the piece before it, so each graph-closed gap made the scaffold *k*-1 bases too
+long. 48 closed gaps × 127 bp = 6,096 bp — exactly the difference between the
+old total and the corrected one.
+
+The FASTA/AGP consistency check could not catch it, because both are generated
+from a single coordinate counter: they agreed with each other while both were
+wrong relative to the biology. What was missing was a test that a scaffold
+equals the genome it was built from. That test now exists, parameterised over
+four overlap sizes and including a bridged gap with a reverse-complemented
+member, and it fails loudly if the trim is removed.
 
 ### The AGP contract on real data
 
