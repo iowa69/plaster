@@ -164,11 +164,14 @@ are in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 components, N50, longest node, largest component and median depth all agree
 exactly.
 
-**Against QUAST**, on a closed *Klebsiella pneumoniae* reference: all nineteen
-shared statistics agree — N50, NG50, L50, auN, GC, genome fraction, duplication
-ratio, NA50, NGA50, total aligned length, mismatch and indel rates, misassembly
-counts, and unaligned contigs. Use `--min-contig 500` to match QUAST's default
-contig filter.
+**Against QUAST**, on six closed *Klebsiella pneumoniae* genomes: contig
+counts, total length, largest contig, GC, N50, NG50, L50, auN, genome fraction,
+duplication ratio, NA50, NGA50, largest alignment, total aligned length,
+unaligned contigs and **misassembly counts** agree exactly on every genome. The
+two most alignment-sensitive statistics — local misassemblies and the
+mismatch/indel rate — differ slightly on three of the six, in the way different
+aligner settings differ. Use `--min-contig 500` to match QUAST's default contig
+filter.
 
 That comparison found two real bugs, neither of which synthetic data exposed:
 contigs spanning a circular replicon's origin were being reported as

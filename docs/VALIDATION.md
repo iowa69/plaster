@@ -106,6 +106,36 @@ includes them in the statistics too.
 
 Both are covered by regression tests in `tests/test_misassembly.py`.
 
+### Across six genomes
+
+The single-genome comparison above could be luck, so it was repeated on five
+further closed *K. pneumoniae* genomes, 80 metric comparisons in total.
+
+These agree **exactly on all six genomes**: number of contigs, total length,
+largest contig, GC, N50, NG50, L50, genome fraction, duplication ratio, NGA50,
+largest alignment, total aligned length, and — the number that matters most —
+**# misassemblies**.
+
+Two metrics differ slightly on three of the six:
+
+| genome | metric | QUAST | Assemblage |
+|---|---|---|---|
+| ERR10447223 | # local misassemblies | 2 | 1 |
+| ERR10447223 | mismatches / 100 kb | 0.13 | 0.04 |
+| ERR11578077 | # local misassemblies | 1 | 0 |
+| ERR11578427 | # local misassemblies | 2 | 1 |
+| ERR11578427 | mismatches / 100 kb | 12.37 | 9.66 |
+| ERR11578427 | indels / 100 kb | 0.60 | 0.13 |
+
+These are the two most alignment-sensitive statistics, and the differences are
+what you get from running a different aligner configuration: a local
+misassembly is defined by a reference gap between 200 bp and 1 kb, so a block
+boundary shifting by a few tens of bases moves an event across the threshold.
+Assemblage reads slightly low on both, consistently. Closing the gap entirely
+would mean reproducing QUAST's exact aligner invocation, which is not a goal;
+what matters is that the structural verdict — how many misassemblies, how much
+of the genome is covered, how contiguous the assembly is — is identical.
+
 ---
 
 ## Scaffolding, judged by QUAST
