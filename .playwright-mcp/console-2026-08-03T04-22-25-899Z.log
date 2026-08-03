@@ -1,0 +1,5 @@
+[      17ms] [ERROR] Error: <svg> attribute height: Expected length, "auto". @ http://localhost:8931/report_test.html:305
+[      17ms] [ERROR] Error: <svg> attribute height: Expected length, "auto". @ http://localhost:8931/report_test.html:310
+[      17ms] [ERROR] Error: <svg> attribute height: Expected length, "auto". @ http://localhost:8931/report_test.html:317
+[      17ms] [ERROR] Error: <svg> attribute height: Expected length, "auto". @ http://localhost:8931/report_test.html:327
+[      17ms] [ERROR] Error: <svg> attribute height: Expected length, "auto". @ http://localhost:8931/report_test.html:335

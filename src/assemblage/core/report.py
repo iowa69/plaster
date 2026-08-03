@@ -279,24 +279,39 @@ class _Plot:
 
     def render(self, css_class: str = "chart") -> str:
         body = "".join(self.parts)
+        # ``max-width`` pins the chart to its natural size so the text inside it
+        # keeps a consistent size instead of scaling with the column width.
         return (
             f'<svg class="{css_class}" viewBox="0 0 {self.width} {self.height}" '
-            f'width="100%" height="{self.height}" preserveAspectRatio="xMidYMid meet" '
+            f'width="100%" style="max-width:{self.width}px" '
+            f'preserveAspectRatio="xMidYMid meet" '
             f'role="img" aria-label="{_e(self.title)}" '
             f'xmlns="http://www.w3.org/2000/svg">{body}</svg>'
         )
 
 
-def _nice_ticks(lo: float, hi: float, count: int = 5) -> list[float]:
-    """A handful of round numbers spanning ``[lo, hi]``."""
+def _nice_ticks(
+    lo: float,
+    hi: float,
+    count: int = 5,
+    integer: bool = False,
+) -> list[float]:
+    """A handful of round numbers spanning ``[lo, hi]``.
+
+    With ``integer=True`` the step is never smaller than 1, so a count axis
+    cannot end up labelled 0, 0, 0, 1 after rounding.
+    """
     if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
         return [lo] if math.isfinite(lo) else [0.0]
     raw = (hi - lo) / max(1, count)
     magnitude = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1.0
+    step = magnitude
     for mult in (1, 2, 2.5, 5, 10):
         step = magnitude * mult
         if raw <= step:
             break
+    if integer:
+        step = max(1.0, round(step))
     start = math.ceil(lo / step) * step
     ticks: list[float] = []
     value = start
@@ -309,26 +324,30 @@ def _nice_ticks(lo: float, hi: float, count: int = 5) -> list[float]:
 
 
 def _log_ticks(lo: float, hi: float) -> list[float]:
+    """Decade ticks, subdivided at 2x/5x when the range spans few decades."""
     lo = max(lo, 1.0)
     hi = max(hi, lo * 10)
+    decades = math.log10(hi) - math.log10(lo)
+    multipliers = (1,) if decades > 4 else ((1, 5) if decades > 2 else (1, 2, 5))
     ticks: list[float] = []
     exp = math.floor(math.log10(lo))
-    while 10**exp <= hi * 1.0000001 and len(ticks) < 20:
-        value = float(10**exp)
-        if value >= lo * 0.999:
-            ticks.append(value)
+    while 10**exp <= hi * 1.0000001 and len(ticks) < 24:
+        for mult in multipliers:
+            value = float(10**exp) * mult
+            if lo * 0.999 <= value <= hi * 1.0000001:
+                ticks.append(value)
         exp += 1
     return ticks or [lo, hi]
 
 
-def _empty_chart(message: str, height: int = 160) -> str:
+def _empty_chart(message: str, height: int = 160, width: int = 500) -> str:
     return (
-        f'<svg class="chart empty" viewBox="0 0 720 {height}" width="100%" '
-        f'height="{height}" role="img" aria-label="{_e(message)}" '
-        f'xmlns="http://www.w3.org/2000/svg">'
-        f'<rect x="0.5" y="0.5" width="719" height="{height - 1}" fill="none" '
+        f'<svg class="chart empty" viewBox="0 0 {width} {height}" width="100%" '
+        f'style="max-width:{width}px" role="img" '
+        f'aria-label="{_e(message)}" xmlns="http://www.w3.org/2000/svg">'
+        f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" fill="none" '
         f'stroke="{GRID}" stroke-dasharray="4 4"/>'
-        f'<text x="360" y="{height // 2}" text-anchor="middle" class="tick">'
+        f'<text x="{width // 2}" y="{height // 2}" text-anchor="middle" class="tick">'
         f"{_e(message)}</text></svg>"
     )
 
@@ -346,12 +365,12 @@ def svg_cumulative(curve: Sequence[Sequence[int]] | None) -> str:
     if len(points) == 1:
         points = [(0.0, 0.0), points[0]]
 
-    plot = _Plot(title="Cumulative length")
+    plot = _Plot(width=500, height=300, title="Cumulative length")
     max_x = max(p[0] for p in points)
     max_y = max(p[1] for p in points)
     plot.set_domain(0, max_x, 0, max_y * 1.05)
     plot.frame(
-        _nice_ticks(0, max_x, 6),
+        _nice_ticks(0, max_x, 5, integer=True),
         _nice_ticks(0, max_y * 1.05, 5),
         x_label="Contig rank (longest first)",
         y_label="Cumulative length (bp)",
@@ -385,7 +404,7 @@ def svg_nx(curve: Sequence[Sequence[float]] | None, n50: int | None = None) -> s
     if not points:
         return _empty_chart("no contigs to plot")
 
-    plot = _Plot(title="Nx curve")
+    plot = _Plot(width=500, height=300, title="Nx curve")
     max_y = max(p[1] for p in points) or 1.0
     plot.set_domain(0, 100, 0, max_y * 1.05)
     plot.frame(
@@ -433,7 +452,7 @@ def svg_histogram(histogram: Sequence[Sequence[int]] | None) -> str:
     bins = [(float(a), int(b)) for a, b in (histogram or [])]
     bins = [(max(lo, 1.0), count) for lo, count in bins]
     if not bins:
-        return _empty_chart("no contigs to plot")
+        return _empty_chart("no contigs to plot", 200, 1000)
 
     lo = bins[0][0]
     if len(bins) > 1:
@@ -444,14 +463,18 @@ def svg_histogram(histogram: Sequence[Sequence[int]] | None) -> str:
         ratio = 10.0
         hi = lo * 10
 
-    plot = _Plot(title="Contig length histogram")
+    plot = _Plot(
+        width=1000, height=320, margin=(18, 22, 48, 78),
+        title="Contig length histogram",
+    )
     max_count = max(c for _lo, c in bins) or 1
     plot.set_domain(lo, hi, 0, max_count * 1.12, log_x=True)
     plot.frame(
         _log_ticks(lo, hi),
-        _nice_ticks(0, max_count * 1.12, 5),
+        _nice_ticks(0, max_count * 1.12, 5, integer=True),
         x_label="Contig length (bp, log scale)",
         y_label="Number of contigs",
+        x_fmt=fmt_bp,
         y_fmt=lambda v: f"{int(v):,}",
     )
 
@@ -491,7 +514,7 @@ def svg_ideogram(reference_report: Any) -> str:
     )
     names = sorted(set(blocks) | set(coverage))
     if not names:
-        return _empty_chart("no alignments to the reference", 120)
+        return _empty_chart("no alignments to the reference", 120, 1000)
 
     lengths: dict[str, float] = {}
     for name in names:
@@ -524,9 +547,9 @@ def svg_ideogram(reference_report: Any) -> str:
             )
 
     row_h = 46
-    label_w = 132
-    right_pad = 74
-    width = 760
+    label_w = 150
+    right_pad = 84
+    width = 1000
     top = 14
     height = top + row_h * len(names) + 44
     track_w = width - label_w - right_pad
@@ -604,7 +627,8 @@ def svg_ideogram(reference_report: Any) -> str:
     body = "".join(parts)
     return (
         f'<svg class="chart ideogram" viewBox="0 0 {width} {_round(height)}" '
-        f'width="100%" height="{_round(height)}" preserveAspectRatio="xMidYMid meet" '
+        f'width="100%" style="max-width:{width}px" '
+        f'preserveAspectRatio="xMidYMid meet" '
         f'role="img" aria-label="Reference coverage ideogram" '
         f'xmlns="http://www.w3.org/2000/svg">{body}</svg>'
     )
@@ -615,9 +639,9 @@ def svg_scaffold_n50(before: int | None, after: int | None) -> str:
     values = [("Contig N50", before or 0), ("Scaffold N50", after or 0)]
     top = max(v for _l, v in values)
     if top <= 0:
-        return _empty_chart("no scaffold lengths to compare", 140)
+        return _empty_chart("no scaffold lengths to compare", 140, 400)
 
-    plot = _Plot(width=360, height=210, margin=(16, 16, 40, 74), title="N50 change")
+    plot = _Plot(width=400, height=230, margin=(16, 16, 42, 76), title="N50 change")
     plot.set_domain(0, 1, 0, top * 1.18)
     plot.frame([], _nice_ticks(0, top * 1.18, 4), y_label="N50 (bp)")
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Sequence
 
 from .errors import GraphOperationError
 from .sequence import flip, gc_content, oriented, revcomp
@@ -170,6 +170,9 @@ class AssemblyGraph:
         self.source_format: str | None = None
         # (segment, orient) -> list of (segment, orient) reachable by walking forward
         self._out: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+        # segment -> the canonical keys of every link touching it, so that
+        # removing a segment costs its degree rather than a scan of all links.
+        self._seg_links: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
 
     # -- construction -------------------------------------------------------
 
@@ -200,12 +203,31 @@ class AssemblyGraph:
         return True
 
     def _index_link(self, link: Link) -> None:
+        key = link.canonical_key()
+        self._seg_links[link.from_name].add(key)
+        self._seg_links[link.to_name].add(key)
         self._out[(link.from_name, link.from_orient)].append((link.to_name, link.to_orient))
         rev = link.reverse()
-        self._out[(rev.from_name, rev.from_orient)].append((rev.to_name, rev.to_orient))
+        # A hairpin (a link joining one end of a segment to itself) is its own
+        # reverse; indexing it twice would double its degree.
+        if rev.key() != link.key():
+            self._out[(rev.from_name, rev.from_orient)].append((rev.to_name, rev.to_orient))
+
+    def _unindex_link(self, link: Link) -> None:
+        key = link.canonical_key()
+        self._seg_links.get(link.from_name, set()).discard(key)
+        self._seg_links.get(link.to_name, set()).discard(key)
+        _discard(self._out.get((link.from_name, link.from_orient)), (link.to_name, link.to_orient))
+        rev = link.reverse()
+        if rev.key() != link.key():
+            _discard(
+                self._out.get((rev.from_name, rev.from_orient)),
+                (rev.to_name, rev.to_orient),
+            )
 
     def _reindex(self) -> None:
         self._out = defaultdict(list)
+        self._seg_links = defaultdict(set)
         for link in self.links.values():
             self._index_link(link)
 
@@ -269,9 +291,9 @@ class AssemblyGraph:
 
     def links_of(self, name: str) -> list[Link]:
         return [
-            lk
-            for lk in self.links.values()
-            if lk.from_name == name or lk.to_name == name
+            self.links[key]
+            for key in self._seg_links.get(name, ())
+            if key in self.links
         ]
 
     # -- components ---------------------------------------------------------
@@ -393,22 +415,46 @@ class AssemblyGraph:
         if name not in self.segments:
             raise GraphOperationError(f"no such segment {name!r}")
         seg = self.segments.pop(name)
-        removed = [lk for lk in self.links.values() if name in (lk.from_name, lk.to_name)]
+        removed = self.links_of(name)
         for lk in removed:
             self.links.pop(lk.canonical_key(), None)
-        self._reindex()
+            self._unindex_link(lk)
+        self._seg_links.pop(name, None)
+        self._out.pop((name, "+"), None)
+        self._out.pop((name, "-"), None)
         return {
             "op": "add_segment",
             "segment": seg,
             "links": removed,
         }
 
+    def remove_segments(self, names: Iterable[str]) -> dict:
+        """Bulk removal. Cheaper than repeated :meth:`remove_segment`."""
+        doomed = [n for n in dict.fromkeys(names) if n in self.segments]
+        segments = []
+        links: list[Link] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for name in doomed:
+            segments.append(self.segments.pop(name))
+            for link in self.links_of(name):
+                key = link.canonical_key()
+                if key in seen:
+                    continue
+                seen.add(key)
+                links.append(link)
+                self.links.pop(key, None)
+                self._unindex_link(link)
+            self._seg_links.pop(name, None)
+            self._out.pop((name, "+"), None)
+            self._out.pop((name, "-"), None)
+        return {"op": "add_segment", "segments": segments, "links": links}
+
     def remove_link(self, link: Link) -> dict:
         key = link.canonical_key()
         if key not in self.links:
             raise GraphOperationError("no such link")
         stored = self.links.pop(key)
-        self._reindex()
+        self._unindex_link(stored)
         return {"op": "add_link", "links": [stored]}
 
     def merge_simple_path(self, names: Sequence[str]) -> None:  # pragma: no cover - see simplify
@@ -450,6 +496,16 @@ class AssemblyGraph:
             "dead_ends": self.dead_end_count(),
             "has_sequences": any(s.has_sequence for s in self.segments.values()),
         }
+
+
+def _discard(items: list | None, value) -> None:
+    """Remove one occurrence of ``value`` from ``items`` if present."""
+    if not items:
+        return
+    try:
+        items.remove(value)
+    except ValueError:
+        pass
 
 
 # ---------------------------------------------------------------------------

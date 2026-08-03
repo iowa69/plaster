@@ -16,19 +16,12 @@ from .misassembly import Misassembly
 
 def delete_segments(graph: AssemblyGraph, names: Sequence[str]) -> dict:
     """Remove segments and every link touching them."""
-    removed_segments: list[Segment] = []
-    removed_links: list[Link] = []
-    for name in names:
-        if name not in graph.segments:
-            continue
-        inverse = graph.remove_segment(name)
-        removed_segments.append(inverse["segment"])
-        removed_links.extend(inverse["links"])
+    inverse = graph.remove_segments(names)
     return {
         "kind": "delete_segments",
-        "segments": removed_segments,
-        "links": removed_links,
-        "count": len(removed_segments),
+        "segments": inverse["segments"],
+        "links": inverse["links"],
+        "count": len(inverse["segments"]),
     }
 
 
@@ -227,12 +220,9 @@ def merge_path(graph: AssemblyGraph, steps: Sequence[tuple[str, str]], new_name:
         (n, o) for n, o in graph.successors(tail, tail_orient) if n not in set(names)
     ]
 
-    removed_segments: list[Segment] = []
-    removed_links: list[Link] = []
-    for name in names:
-        inverse = graph.remove_segment(name)
-        removed_segments.append(inverse["segment"])
-        removed_links.extend(inverse["links"])
+    inverse = graph.remove_segments(names)
+    removed_segments: list[Segment] = inverse["segments"]
+    removed_links: list[Link] = inverse["links"]
 
     graph.add_segment(
         Segment(merged_name, sequence, len(sequence), depth), replace=True

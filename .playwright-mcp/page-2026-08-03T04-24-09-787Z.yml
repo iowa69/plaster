@@ -1,0 +1,191 @@
+- generic [ref=f2e2]:
+  - banner [ref=f2e3]:
+    - generic [ref=f2e4]: Assembly quality control
+    - heading "Assemblage demo QC report" [level=1] [ref=f2e5]
+    - generic [ref=f2e6]:
+      - generic [ref=f2e7]: Generated 2026-08-03 06:23:02 CEST
+      - generic [ref=f2e8]: Assembly /home/iowa/Desktop/patch/examples/demo/assembly.gfa
+      - generic [ref=f2e9]: Reference /home/iowa/Desktop/patch/examples/demo/reference.fasta
+      - generic [ref=f2e10]: Contigs 10 · Total 137.4 kb · N50 19.0 kb
+  - tablist [ref=f2e11]:
+    - tab "Summary" [ref=f2e12] [cursor=pointer]
+    - tab "Basic statistics" [ref=f2e13] [cursor=pointer]
+    - tab "Reference-based" [ref=f2e14] [cursor=pointer]
+    - tab "Misassemblies" [ref=f2e15] [cursor=pointer]
+    - tab "Scaffolding" [active] [selected] [ref=f2e16] [cursor=pointer]
+    - tab "Comparison" [ref=f2e17] [cursor=pointer]
+  - text: ↕ ↕ ↕ ↕ ↕ ↕ ↕ ↕ ↕
+  - tabpanel "Scaffolding" [ref=f2e207]:
+    - heading "Scaffolding summary" [level=2] [ref=f2e208]
+    - table [ref=f2e209]:
+      - caption [ref=f2e210]: Scaffold plan and the sequence built from it
+      - rowgroup [ref=f2e211]:
+        - row [ref=f2e212]:
+          - cell "Method" [ref=f2e213]
+          - cell "reference" [ref=f2e214]
+        - row [ref=f2e215]:
+          - cell "# scaffolds" [ref=f2e216]
+          - cell "2" [ref=f2e217]
+        - row [ref=f2e218]:
+          - cell "# contigs placed" [ref=f2e219]
+          - cell "9" [ref=f2e220]
+        - row [ref=f2e221]:
+          - cell "# contigs unplaced" [ref=f2e222]
+          - cell "1" [ref=f2e223]
+        - row [ref=f2e224]:
+          - cell "# contigs redundant" [ref=f2e225]
+          - cell "0" [ref=f2e226]
+        - row [ref=f2e227]:
+          - cell "Total scaffold length" [ref=f2e228]
+          - cell "179,404 (179.4 kb)" [ref=f2e229]
+        - row [ref=f2e230]:
+          - cell "# gaps" [ref=f2e231]
+          - cell "4" [ref=f2e232]
+        - row [ref=f2e233]:
+          - cell "Gap bases (N)" [ref=f2e234]
+          - cell "43,104 (43.1 kb)" [ref=f2e235]
+        - row [ref=f2e236]:
+          - cell "Bridged bases (from graph) real sequence recovered from the graph instead of Ns" [ref=f2e237]:
+            - text: Bridged bases (from graph)
+            - generic [ref=f2e238]: real sequence recovered from the graph instead of Ns
+          - cell "2,400 (2.40 kb)" [ref=f2e239]
+        - row [ref=f2e240]:
+          - cell "Largest scaffold" [ref=f2e241]
+          - cell "175,404 (175.4 kb)" [ref=f2e242]
+        - row [ref=f2e243]:
+          - cell "Contig N50 (before)" [ref=f2e244]
+          - cell "19,000 (19.0 kb)" [ref=f2e245]
+        - row [ref=f2e246]:
+          - cell "Scaffold N50 (after)" [ref=f2e247]
+          - cell "175,404 (175.4 kb)" [ref=f2e248]
+    - generic [ref=f2e249]:
+      - text: Plan notes
+      - list [ref=f2e250]:
+        - listitem [ref=f2e251]: 3 gap(s) replaced with real sequence recovered from the assembly graph
+        - listitem [ref=f2e252]: 9 contig(s) placed on 2 scaffold(s); 1 unplaced, 0 redundant
+    - heading "Scaffolds" [level=2] [ref=f2e253]
+    - generic [ref=f2e254]:
+      - heading "scaffold_chromosome 8 member(s) · 175,404 (175.4 kb) · source reference · reference chromosome" [level=3] [ref=f2e255]:
+        - generic [ref=f2e256]: scaffold_chromosome
+        - generic [ref=f2e257]: 8 member(s) · 175,404 (175.4 kb) · source reference · reference chromosome
+      - table [ref=f2e259]:
+        - rowgroup [ref=f2e260]:
+          - row [ref=f2e261]:
+            - columnheader "# ↕" [ref=f2e262] [cursor=pointer]
+            - columnheader "Contig ↕" [ref=f2e263] [cursor=pointer]
+            - columnheader "Orient. ↕" [ref=f2e264] [cursor=pointer]
+            - columnheader "Reference span ↕" [ref=f2e265] [cursor=pointer]
+            - columnheader "Identity ↕" [ref=f2e266] [cursor=pointer]
+            - columnheader "Gap after ↕" [ref=f2e267] [cursor=pointer]
+            - columnheader "Gap evidence ↕" [ref=f2e268] [cursor=pointer]
+            - columnheader "Graph bridge ↕" [ref=f2e269] [cursor=pointer]
+        - rowgroup [ref=f2e270]:
+          - row [ref=f2e271]:
+            - cell "1" [ref=f2e272]
+            - cell "ctg_clean_1" [ref=f2e273]
+            - cell "+" [ref=f2e274]
+            - cell "0–19,000" [ref=f2e276]
+            - cell "99.89%" [ref=f2e277]
+            - cell "0" [ref=f2e278]
+            - cell "graph" [ref=f2e279]
+            - cell "ctg_repeat+ 2,400 bp" [ref=f2e281]:
+              - text: ctg_repeat+
+              - generic [ref=f2e282]: 2,400 bp
+          - row [ref=f2e283]:
+            - cell "2" [ref=f2e284]
+            - cell "ctg_clean_2" [ref=f2e285]
+            - cell "+" [ref=f2e286]
+            - cell "23,000–55,000" [ref=f2e288]
+            - cell "99.92%" [ref=f2e289]
+            - cell "3,000" [ref=f2e290]
+            - cell "reference" [ref=f2e291]
+            - cell "–" [ref=f2e293]
+          - row [ref=f2e294]:
+            - cell "3" [ref=f2e295]
+            - cell "ctg_clean_3" [ref=f2e296]
+            - cell "+" [ref=f2e297]
+            - cell "58,000–69,500" [ref=f2e299]
+            - cell "99.90%" [ref=f2e300]
+            - cell "5,500" [ref=f2e301]
+            - cell "reference" [ref=f2e302]
+            - cell "–" [ref=f2e304]
+          - row [ref=f2e305]:
+            - cell "4" [ref=f2e306]
+            - cell "ctg_clean_4 overlaps previous" [ref=f2e307]:
+              - text: ctg_clean_4
+              - generic [ref=f2e308]: overlaps previous
+            - cell "+" [ref=f2e309]
+            - cell "75,000–100,000" [ref=f2e311]
+            - cell "99.92%" [ref=f2e312]
+            - cell "0" [ref=f2e313]
+            - cell "adjacent" [ref=f2e314]
+            - cell "–" [ref=f2e316]
+          - row [ref=f2e317]:
+            - cell "5" [ref=f2e318]
+            - cell "ctg_inversion" [ref=f2e319]
+            - cell "+" [ref=f2e320]
+            - cell "100,000–108,001" [ref=f2e322]
+            - cell "99.95%" [ref=f2e323]
+            - cell "11,999" [ref=f2e324]
+            - cell "reference" [ref=f2e325]
+            - cell "–" [ref=f2e327]
+          - row [ref=f2e328]:
+            - cell "6" [ref=f2e329]
+            - cell "ctg_repeat" [ref=f2e330]
+            - cell "+" [ref=f2e331]
+            - cell "120,000–122,395" [ref=f2e333]
+            - cell "99.92%" [ref=f2e334]
+            - cell "22,605" [ref=f2e335]
+            - cell "reference" [ref=f2e336]
+            - cell "–" [ref=f2e338]
+          - row [ref=f2e339]:
+            - cell "7" [ref=f2e340]
+            - cell "ctg_relocation overlaps previous" [ref=f2e341]:
+              - text: ctg_relocation
+              - generic [ref=f2e342]: overlaps previous
+            - cell "+" [ref=f2e343]
+            - cell "145,000–152,000" [ref=f2e345]
+            - cell "99.86%" [ref=f2e346]
+            - cell "0" [ref=f2e347]
+            - cell "adjacent" [ref=f2e348]
+            - cell "–" [ref=f2e350]
+          - row [ref=f2e351]:
+            - cell "8" [ref=f2e352]
+            - cell "ctg_translocation" [ref=f2e353]
+            - cell "+" [ref=f2e354]
+            - cell "152,000–158,000" [ref=f2e356]
+            - cell "99.92%" [ref=f2e357]
+            - cell "–" [ref=f2e358]
+            - cell "–" [ref=f2e359]
+            - cell "–" [ref=f2e360]
+    - generic [ref=f2e361]:
+      - heading "scaffold_plasmid 1 member(s) · 4,000 (4.00 kb) · source reference · reference plasmid" [level=3] [ref=f2e362]:
+        - generic [ref=f2e363]: scaffold_plasmid
+        - generic [ref=f2e364]: 1 member(s) · 4,000 (4.00 kb) · source reference · reference plasmid
+      - table [ref=f2e366]:
+        - rowgroup [ref=f2e367]:
+          - row [ref=f2e368]:
+            - columnheader "# ↕" [ref=f2e369] [cursor=pointer]
+            - columnheader "Contig ↕" [ref=f2e370] [cursor=pointer]
+            - columnheader "Orient. ↕" [ref=f2e371] [cursor=pointer]
+            - columnheader "Reference span ↕" [ref=f2e372] [cursor=pointer]
+            - columnheader "Identity ↕" [ref=f2e373] [cursor=pointer]
+            - columnheader "Gap after ↕" [ref=f2e374] [cursor=pointer]
+            - columnheader "Gap evidence ↕" [ref=f2e375] [cursor=pointer]
+            - columnheader "Graph bridge ↕" [ref=f2e376] [cursor=pointer]
+        - rowgroup [ref=f2e377]:
+          - row [ref=f2e378]:
+            - cell "1" [ref=f2e379]
+            - cell "ctg_plasmid" [ref=f2e380]
+            - cell "+" [ref=f2e381]
+            - cell "5,000–9,000" [ref=f2e383]
+            - cell "99.95%" [ref=f2e384]
+            - cell "–" [ref=f2e385]
+            - cell "–" [ref=f2e386]
+            - cell "–" [ref=f2e387]
+    - heading "Unplaced contigs (1)" [level=3] [ref=f2e388]
+    - code [ref=f2e390]: ctg_foreign
+  - text: ↕ ↕ ↕
+  - contentinfo [ref=f2e165]:
+    - generic [ref=f2e166]: Generated by Assemblage 1.0.0 · 2026-08-03 04:23:02 UTC
+    - generic [ref=f2e167]: Self-contained report · no external resources
