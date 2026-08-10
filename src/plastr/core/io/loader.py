@@ -72,23 +72,31 @@ def load_spades_paths(graph: AssemblyGraph, path: str | os.PathLike[str]) -> int
     i = 0
     while i < len(lines) - 1:
         name = lines[i]
-        # A path may be split across lines ending with ';'
+        # A scaffold gap splits the path across lines, the first ending with
+        # ';'. The ';' is the gap marker, not punctuation to be stripped: joining
+        # the two sides without it fuses '753119+' and '8274-' into the single
+        # unresolvable token '753119+8274-', which loses both flanking segments.
         steps_text = lines[i + 1]
         i += 2
         while steps_text.endswith(";") and i < len(lines):
-            steps_text = steps_text[:-1] + lines[i]
+            steps_text = steps_text + lines[i]
             i += 1
         if name.endswith("'"):
             continue
+        parsed, gap_positions = gfa_mod.parse_path_steps(steps_text)
+        # Gap positions index into `parsed`; segments the graph does not have are
+        # dropped, so remap them onto the surviving steps by index, not by name
+        # (a repeat can appear in the same path more than once).
+        gap_at = set(gap_positions)
         steps: list[tuple[str, str]] = []
-        for token in steps_text.replace(";", "").split(","):
-            token = token.strip()
-            if len(token) < 2 or token[-1] not in "+-":
+        gaps: list[int] = []
+        for index, (seg, orient) in enumerate(parsed):
+            if seg not in graph.segments:
                 continue
-            seg, orient = token[:-1], token[-1]
-            if seg in graph.segments:
-                steps.append((seg, orient))
+            steps.append((seg, orient))
+            if index in gap_at:
+                gaps.append(len(steps) - 1)
         if steps:
-            graph.add_path(Path(name, steps))
+            graph.add_path(Path(name=name, steps=steps, gaps=gaps))
             added += 1
     return added

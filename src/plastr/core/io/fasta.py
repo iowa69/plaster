@@ -11,9 +11,36 @@ from typing import IO, Iterator
 from ..errors import PlastrFormatError
 
 
+def require_regular_file(path: str | os.PathLike[str]) -> None:
+    """Reject anything that is not a seekable regular file.
+
+    Plastr reads every input more than once -- sniff the format, then parse it,
+    sometimes then measure link overlaps. That is fine for a file and wrong for
+    a stream: a pipe, FIFO or process substitution (``plastr qc <(zcat x.gz)``)
+    cannot be rewound, so the second read silently starts wherever the first
+    one's buffer stopped and the assembly comes out short with exit 0. A FIFO
+    with no writer is worse -- the open blocks forever, and in the server it
+    does so while holding the lock that every other request needs.
+    """
+    p = Path(path)
+    try:
+        mode = os.stat(p).st_mode
+    except OSError as exc:
+        raise PlastrFormatError(f"cannot read {path}: {exc.strerror or exc}") from exc
+    import stat as _stat
+
+    if not _stat.S_ISREG(mode):
+        raise PlastrFormatError(
+            f"{path} is not a regular file. Plastr reads its input more than "
+            "once, so it cannot work from a pipe, FIFO or process substitution "
+            "-- write the data to a file first."
+        )
+
+
 def open_text(path: str | os.PathLike[str]) -> IO[str]:
     """Open a possibly-gzipped text file."""
     p = Path(path)
+    require_regular_file(p)
     with open(p, "rb") as probe:
         magic = probe.read(2)
     if magic == b"\x1f\x8b":

@@ -139,11 +139,17 @@ class Path:
     name: str
     steps: list[tuple[str, str]] = field(default_factory=list)  # (segment, orient)
     overlaps: list[int] = field(default_factory=list)
+    #: Indices ``i`` such that the join between ``steps[i]`` and ``steps[i+1]``
+    #: is a scaffold gap rather than a graph edge. SPAdes writes these as ``;``
+    #: in a P line or contigs.paths; the two sides are not adjacent in the graph
+    #: and no sequence should be spliced across the join.
+    gaps: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "steps": [f"{n}{o}" for n, o in self.steps],
+            "gaps": list(self.gaps),
         }
 
 
@@ -516,16 +522,17 @@ def _discard(items: list | None, value) -> None:
 def depth_from_tags(tags: dict[str, object], length: int) -> float | None:
     """Work out per-base depth from the usual GFA tag spellings.
 
-    ``dp``/``DP``/``FC`` are depth directly. ``KC``/``RC`` are k-mer/read counts,
-    which become depth once divided by segment length.
+    ``dp``/``DP`` are depth directly. ``KC``/``RC``/``FC`` are k-mer, read and
+    fragment *counts* -- all three become depth once divided by segment length,
+    which is what the GFA1 spec defines and what Bandage does.
     """
-    for key in ("dp", "DP", "FC", "fc"):
+    for key in ("dp", "DP"):
         if key in tags:
             try:
                 return float(tags[key])  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 pass
-    for key in ("KC", "kc", "RC", "rc"):
+    for key in ("KC", "kc", "RC", "rc", "FC", "fc"):
         if key in tags and length:
             try:
                 return float(tags[key]) / length  # type: ignore[arg-type]

@@ -69,6 +69,43 @@ def cigar_overlap(cigar: str) -> int:
     return total
 
 
+def parse_path_steps(text: str) -> tuple[list[tuple[str, str]], list[int]]:
+    """Split a P-line / contigs.paths step list into steps and gap positions.
+
+    SPAdes separates the two sides of a scaffold gap with ``;`` instead of
+    ``,``. Splitting on ``,`` alone glues the flanking tokens into one
+    unresolvable name (``753119+;8274-``), which drops both real segments and
+    usually the whole path with them.
+    """
+    steps: list[tuple[str, str]] = []
+    gaps: list[int] = []
+    for chunk_index, chunk in enumerate(text.split(";")):
+        if chunk_index and steps:
+            # Everything after a ';' starts on the far side of a scaffold gap.
+            gaps.append(len(steps) - 1)
+        for token in chunk.split(","):
+            token = token.strip()
+            if len(token) < 2 or token[-1] not in "+-":
+                continue
+            steps.append((token[:-1], token[-1]))
+    return steps, gaps
+
+
+def _looks_like_fastg(name: str, header: str) -> bool:
+    """Is this ``>`` header a SPAdes FASTG edge record rather than plain FASTA?
+
+    A colon alone is not evidence: ordinary FASTA headers carry them all the
+    time (``>chr1:1-1000`` from samtools faidx, accession ranges, tRNAscan
+    output). SPAdes always terminates a FASTG header with ``;``, and only lists
+    neighbours after the colon, so require that instead. Getting this wrong is
+    expensive -- read_fastg splits the header at the colon and folds records
+    together, so a misdetected FASTA silently loses sequences.
+    """
+    if name.endswith(".fastg"):
+        return True
+    return header.rstrip().endswith(";")
+
+
 def detect_format(path: str | os.PathLike[str]) -> str:
     """Sniff the file type: 'gfa', 'gfa2', 'fastg', 'fasta', or 'unknown'."""
     name = str(path).lower()
@@ -96,7 +133,7 @@ def detect_format(path: str | os.PathLike[str]) -> str:
             if head in {"E", "G", "O", "U"} and "\t" in line:
                 return "gfa2"
             if line.startswith(">"):
-                return "fastg" if name.endswith(".fastg") or ":" in line else "fasta"
+                return "fastg" if _looks_like_fastg(name, line) else "fasta"
     if name.endswith(".fastg"):
         return "fastg"
     if name.endswith((".fa", ".fasta", ".fna", ".ffn", ".contigs")):
@@ -151,7 +188,10 @@ def read_gfa(path: str | os.PathLike[str], strict: bool = False) -> AssemblyGrap
                         guessed = length_from_name(name)
                         if guessed:
                             length = guessed
-                depth = depth_from_tags(tags, length) or depth_from_name(name)
+                # An explicit zero depth is a real measurement, so test for None
+                # rather than falsiness -- `or` would discard DP:f:0 / KC:i:0.
+                tagged = depth_from_tags(tags, length)
+                depth = depth_from_name(name) if tagged is None else tagged
                 graph.add_segment(
                     Segment(name=name, sequence=sequence, length=length, depth=depth, tags=tags),
                     replace=not strict,
@@ -184,13 +224,8 @@ def read_gfa(path: str | os.PathLike[str], strict: bool = False) -> AssemblyGrap
                 if len(fields) < 3:
                     continue
                 pname = fields[1]
-                steps = []
-                for token in fields[2].split(","):
-                    token = token.strip()
-                    if len(token) < 2 or token[-1] not in "+-":
-                        continue
-                    steps.append((token[:-1], token[-1]))
-                pending_paths.append(Path(name=pname, steps=steps))
+                steps, gaps = parse_path_steps(fields[2])
+                pending_paths.append(Path(name=pname, steps=steps, gaps=gaps))
                 continue
 
             if rec == "W":
@@ -309,52 +344,56 @@ def write_gfa(
 ) -> None:
     """Write the graph back out as GFA 1.0."""
     with open(path, "w") as out:
-        out.write("H\tVN:Z:1.0\n")
-        for name in graph.segments:
-            seg = graph.segments[name]
-            seq = seg.sequence if seg.sequence else "*"
-            parts = [f"S\t{name}\t{seq}"]
-            if seg.sequence is None and seg.length:
-                parts.append(f"LN:i:{seg.length}")
-            if seg.depth is not None:
-                parts.append(f"dp:f:{seg.depth:.6g}")
-            for key, value in seg.tags.items():
-                if key in {"LN", "ln", "dp", "DP"}:
-                    continue
-                if isinstance(value, int):
-                    parts.append(f"{key}:i:{value}")
-                elif isinstance(value, float):
-                    parts.append(f"{key}:f:{value:.6g}")
-                else:
-                    parts.append(f"{key}:Z:{value}")
-            out.write("\t".join(parts) + "\n")
-        for link in graph.links.values():
-            cigar = link.cigar if link.cigar and link.cigar != "*" else (
-                f"{link.overlap}M" if link.overlap else "*"
-            )
-            out.write(
-                f"L\t{link.from_name}\t{link.from_orient}\t"
-                f"{link.to_name}\t{link.to_orient}\t{cigar}\n"
-            )
-        if include_paths:
-            for p in graph.paths.values():
-                if not p.steps:
-                    continue
-                steps = ",".join(f"{n}{o}" for n, o in p.steps)
-                overlaps = "*" if not p.overlaps else ",".join(f"{o}M" for o in p.overlaps)
-                out.write(f"P\t{p.name}\t{steps}\t{overlaps}\n")
+        out.writelines(gfa_records(graph, include_paths=include_paths))
 
 
-def gfa_records(graph: AssemblyGraph) -> Iterator[str]:
-    """Yield GFA lines without touching the filesystem (used by the download API)."""
+def gfa_records(graph: AssemblyGraph, include_paths: bool = True) -> Iterator[str]:
+    """Yield the graph as GFA 1.0 lines.
+
+    The single serialiser: :func:`write_gfa` and the download endpoint both go
+    through here, so a graph saved to disk and the same graph downloaded from
+    the browser are byte-identical. They were separate implementations once, and
+    the download copy quietly omitted LN tags (zeroing every length in a
+    sequence-less graph) and every P line.
+    """
     yield "H\tVN:Z:1.0\n"
     for name, seg in graph.segments.items():
         seq = seg.sequence if seg.sequence else "*"
-        extra = "" if seg.depth is None else f"\tdp:f:{seg.depth:.6g}"
-        yield f"S\t{name}\t{seq}{extra}\n"
+        parts = [f"S\t{name}\t{seq}"]
+        if seg.sequence is None and seg.length:
+            parts.append(f"LN:i:{seg.length}")
+        if seg.depth is not None:
+            parts.append(f"dp:f:{seg.depth:.6g}")
+        for key, value in seg.tags.items():
+            if key in {"LN", "ln", "dp", "DP"}:
+                continue
+            if isinstance(value, bool):
+                parts.append(f"{key}:Z:{value}")
+            elif isinstance(value, int):
+                parts.append(f"{key}:i:{value}")
+            elif isinstance(value, float):
+                parts.append(f"{key}:f:{value:.6g}")
+            else:
+                parts.append(f"{key}:Z:{value}")
+        yield "\t".join(parts) + "\n"
     for link in graph.links.values():
-        cigar = f"{link.overlap}M" if link.overlap else "*"
+        cigar = link.cigar if link.cigar and link.cigar != "*" else (
+            f"{link.overlap}M" if link.overlap else "*"
+        )
         yield (
             f"L\t{link.from_name}\t{link.from_orient}\t"
             f"{link.to_name}\t{link.to_orient}\t{cigar}\n"
         )
+    if include_paths:
+        for p in graph.paths.values():
+            if not p.steps:
+                continue
+            gaps = set(p.gaps)
+            steps = ""
+            for index, (n, o) in enumerate(p.steps):
+                if index:
+                    # ';' marks a scaffold gap, ',' an adjacency in the graph.
+                    steps += ";" if index - 1 in gaps else ","
+                steps += f"{n}{o}"
+            overlaps = "*" if not p.overlaps else ",".join(f"{o}M" for o in p.overlaps)
+            yield f"P\t{p.name}\t{steps}\t{overlaps}\n"

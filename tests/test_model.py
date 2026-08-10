@@ -449,7 +449,7 @@ class TestExport:
         assert by_name["R"]["circular"] is True
         assert by_name["A"]["circular"] is False
         assert len(data["links"]) == 3
-        assert data["paths"] == [{"name": "p1", "steps": ["A+", "B+"]}]
+        assert data["paths"] == [{"name": "p1", "steps": ["A+", "B+"], "gaps": []}]
         assert "sequence" not in by_name["A"]
         assert tiny_graph.to_dict(include_sequence=True)["segments"][0]["sequence"]
 
@@ -460,13 +460,20 @@ class TestExport:
 
 
 class TestDepthHelpers:
-    @pytest.mark.parametrize("key", ["dp", "DP", "FC", "fc"])
+    @pytest.mark.parametrize("key", ["dp", "DP"])
     def test_direct_depth_tags(self, key):
         assert depth_from_tags({key: 12.5}, 1000) == pytest.approx(12.5)
 
-    @pytest.mark.parametrize("key", ["KC", "kc", "RC", "rc"])
+    @pytest.mark.parametrize("key", ["KC", "kc", "RC", "rc", "FC", "fc"])
     def test_count_tags_are_divided_by_length(self, key):
+        # KC, RC and FC are all counts in the GFA1 spec -- k-mer, read and
+        # fragment. FC used to be read as a depth, inflating it by exactly the
+        # segment length on every graph that carries it.
         assert depth_from_tags({key: 1000}, 100) == pytest.approx(10.0)
+
+    def test_zero_depth_is_kept_not_treated_as_unknown(self):
+        assert depth_from_tags({"DP": 0}, 100) == 0.0
+        assert depth_from_tags({"KC": 0}, 100) == 0.0
 
     def test_dp_wins_over_kc(self):
         assert depth_from_tags({"dp": 7.0, "KC": 100_000}, 100) == pytest.approx(7.0)
