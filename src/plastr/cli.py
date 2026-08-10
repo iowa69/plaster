@@ -173,8 +173,32 @@ def cmd_view(args) -> int:
         if args.reference:
             _maybe_reference(project, args)
 
+    if not 1 <= args.port <= 65535:
+        print(f"  error: --port must be between 1 and 65535, got {args.port}", file=sys.stderr)
+        return 2
+
     app = create_app(project, threads=args.threads)
     url = f"http://{args.host}:{args.port}"
+
+    config = uvicorn.Config(app, host=args.host, port=args.port, log_level=args.log_level)
+    server = uvicorn.Server(config)
+    # Claim the port before announcing anything. Printing "Plastr is running
+    # at ..." and opening a browser first meant that when the port was already
+    # taken, the banner still appeared and the browser opened on somebody
+    # else's session -- a different assembly, presented as yours.
+    try:
+        # uvicorn logs the OSError and raises SystemExit rather than letting the
+        # error out, so catch both and say something useful instead.
+        sockets = [config.bind_socket()]
+    except (OSError, SystemExit) as exc:
+        detail = exc if isinstance(exc, OSError) else "address already in use"
+        print(
+            f"\nerror: cannot listen on {args.host}:{args.port}: {detail}."
+            "\n       Another Plastr may already be running there; try --port.\n",
+            file=sys.stderr,
+        )
+        return 1
+
     print(BANNER)
     print(f"  Plastr is running at {url}")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
@@ -186,9 +210,11 @@ def cmd_view(args) -> int:
     print("  press Ctrl+C to stop\n")
 
     if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        timer = threading.Timer(1.0, lambda: webbrowser.open(url))
+        timer.daemon = True
+        timer.start()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    server.run(sockets=sockets)
     return 0
 
 
@@ -207,7 +233,9 @@ def cmd_qc(args) -> int:
             source_path=project.source_path,
             reference_path=project.reference_path,
         )
-        with open(args.html, "w") as fh:
+        # The report always contains an en dash and declares UTF-8, so it must
+        # be written as UTF-8 whatever the host locale says.
+        with open(args.html, "w", encoding="utf-8") as fh:
             fh.write(html)
         print(f"\n  report written to {args.html}")
     if args.json:
@@ -464,7 +492,7 @@ def cmd_compare(args) -> int:
             source_path=", ".join(args.assemblies),
             reference_path=args.reference,
         )
-        with open(args.html, "w") as fh:
+        with open(args.html, "w", encoding="utf-8") as fh:
             fh.write(html)
         print(f"\n  report written to {args.html}")
     print()
@@ -564,7 +592,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_view.add_argument("--port", type=int, default=8781, help="port to listen on")
     p_view.add_argument("--no-browser", action="store_true", help="do not open a browser")
-    p_view.add_argument("--log-level", default="warning")
+    p_view.add_argument(
+        "--log-level",
+        default="warning",
+        choices=["critical", "error", "warning", "info", "debug", "trace"],
+    )
     p_view.set_defaults(func=cmd_view)
 
     p_qc = sub.add_parser("qc", help="assembly statistics, with reference evaluation")

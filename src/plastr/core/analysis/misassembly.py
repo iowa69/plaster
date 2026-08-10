@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Sequence
 
-from .align import Alignment, merge_collinear
+from .align import Alignment, _copy_alignment, merge_collinear
 from .metrics import nx_stat
 
 # QUAST's defaults
@@ -113,6 +113,58 @@ def circular_distance(gap: int, ref_length: int, circular: bool) -> int:
     return distance
 
 
+def join_across_origin(
+    blocks: Sequence[Alignment],
+    reference_lengths: dict[str, int],
+    max_gap: int,
+) -> list[Alignment]:
+    """Rejoin aligned blocks that a circular replicon's origin split in two.
+
+    ``classify_misassemblies`` already knows a contig spanning the origin is
+    not misassembled, but the aligned-block list behind NA50/NGA50 and
+    ``largest_alignment`` was still built linearly, so the same contig was
+    counted as two blocks and its contiguity halved. The two halves are
+    contiguous on the circle, so join them when the reference distance measured
+    the short way round is small.
+
+    Only the query span of the result is meaningful -- a block that wraps the
+    origin has no single linear reference interval -- and query span is all the
+    Nx statistics read.
+    """
+    by_key: dict[tuple[str, str, int], list[Alignment]] = {}
+    for block in blocks:
+        by_key.setdefault((block.query, block.ref, block.strand), []).append(block)
+
+    out: list[Alignment] = []
+    for (_query, ref, strand), group in by_key.items():
+        ref_len = reference_lengths.get(ref, 0)
+        if len(group) < 2 or ref_len <= 0:
+            out.extend(group)
+            continue
+        group.sort(key=lambda a: a.q_st)
+        current = group[0]
+        for nxt in group[1:]:
+            q_gap = nxt.q_st - current.q_en
+            r_gap = (
+                nxt.r_st - current.r_en if strand > 0 else current.r_st - nxt.r_en
+            )
+            distance = circular_distance(r_gap, ref_len, True)
+            wrapped = distance < abs(r_gap)
+            if wrapped and abs(q_gap) <= max_gap and distance <= max_gap:
+                merged = _copy_alignment(current)
+                merged.q_st = min(current.q_st, nxt.q_st)
+                merged.q_en = max(current.q_en, nxt.q_en)
+                merged.matches += nxt.matches
+                merged.block_len += nxt.block_len
+                merged.nm += nxt.nm
+                current = merged
+            else:
+                out.append(current)
+                current = nxt
+        out.append(current)
+    return out
+
+
 def classify_misassemblies(
     alignments: Sequence[Alignment],
     min_block: int = 200,
@@ -198,14 +250,27 @@ def classify_misassemblies(
                 gap = right.r_st - left.r_en
             else:
                 gap = left.r_st - right.r_en
-            distance = circular_distance(
+            ref_distance = circular_distance(
                 gap, max(left.r_len, right.r_len), circular_references
             )
-            wrapped = circular_references and distance < abs(gap)
-            if wrapped and distance <= EXTENSIVE_THRESHOLD:
+            wrapped = circular_references and ref_distance < abs(gap)
+            if wrapped and ref_distance <= EXTENSIVE_THRESHOLD:
                 # A contig spanning the origin of a circular replicon is correct,
                 # not misassembled.
                 continue
+            # Two ways a join can disagree with the reference, and either one
+            # is a misassembly: the reference jumps (a deletion or a
+            # rearrangement), or the contig carries sequence the reference does
+            # not account for (an insertion). The reference gap alone misses
+            # the second -- a contig with kilobases of unaligned sequence
+            # spliced in reads as perfectly clean -- so take whichever
+            # discrepancy is larger. QUAST calls the second one the
+            # inconsistency: reference advance minus contig advance.
+            contig_gap = right.q_st - left.q_en
+            inconsistency = circular_distance(
+                gap - contig_gap, max(left.r_len, right.r_len), circular_references
+            )
+            distance = max(ref_distance, inconsistency)
             if distance > EXTENSIVE_THRESHOLD:
                 results.append(
                     Misassembly(
@@ -287,7 +352,13 @@ def evaluate_against_reference(
             100.0 * ref_covered / ref_len if ref_len else 0.0
         )
     report.covered_bases = covered
-    report.genome_fraction = 100.0 * covered / genome if genome else 0.0
+    # Coverage is measured against the reference that was actually aligned to,
+    # so the denominator must be that reference's length. --genome-size is an
+    # expectation used for the NGx/NGAx statistics; using it here produced
+    # impossible answers such as "genome fraction 137%".
+    report.genome_fraction = (
+        100.0 * covered / report.reference_length if report.reference_length else 0.0
+    )
 
     # --- aligned / unaligned contigs ---
     aligned_span: dict[str, int] = {}
@@ -314,9 +385,14 @@ def evaluate_against_reference(
         # Aligned blocks are split at extensive misassemblies but not at local
         # ones, so a chimeric contig loses credit for its full length while a
         # contig with a small indel keeps it.
-        for block in merge_collinear(
+        blocks = merge_collinear(
             hits, max_gap=EXTENSIVE_THRESHOLD, max_overlap=EXTENSIVE_THRESHOLD
-        ):
+        )
+        if circular_references:
+            blocks = join_across_origin(
+                blocks, reference_lengths, EXTENSIVE_THRESHOLD
+            )
+        for block in blocks:
             if block.q_span >= min_block:
                 block_lengths.append(block.q_span)
     if block_lengths:

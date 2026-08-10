@@ -169,10 +169,28 @@ class TestDemoGroundTruth:
             genome_size=338_000,
         )
         assert doubled.covered_bases > 0
+        # Genome fraction measures coverage of the reference that was actually
+        # aligned to, so it must not move when an expected genome size is given
+        # -- that value is for NGx/NGAx. Dividing by it produced impossible
+        # answers (137% on a real strain with --genome-size 4000000).
         assert doubled.genome_fraction == pytest.approx(
-            100.0 * doubled.covered_bases / 338_000
+            100.0 * doubled.covered_bases / doubled.reference_length
         )
+        assert doubled.genome_fraction <= 100.0
         assert doubled.num_misassemblies == 3
+
+    def test_genome_fraction_never_exceeds_100_percent(
+        self, _demo_alignments_session, demo_reference_lengths, demo_graph
+    ):
+        contig_lengths = {n: s.length for n, s in demo_graph.segments.items()}
+        for size in (1_000, 50_000, 338_000, 10_000_000):
+            report = evaluate_against_reference(
+                _demo_alignments_session,
+                demo_reference_lengths,
+                contig_lengths,
+                genome_size=size,
+            )
+            assert 0.0 <= report.genome_fraction <= 100.0, size
 
 
 class TestEvaluateEdgeCases:

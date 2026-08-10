@@ -75,7 +75,19 @@ def parse_query(query: str) -> list[tuple[str, str]]:
                 chunks.append(line)
         if name is not None:
             records.append((name, "".join(chunks)))
+        # A header with no bases under it reaches the backend as a zero-length
+        # query. BLAST then fails with its own usage text; minimap2 silently
+        # returns nothing. Reject it here so both behave the same and the
+        # message says what is wrong.
+        empty = [n for n, seq in records if not seq]
+        records = [(n, seq) for n, seq in records if seq]
         if not records:
+            if empty:
+                raise PlastrFormatError(
+                    f"record {empty[0]!r} has no sequence"
+                    if len(empty) == 1
+                    else f"{len(empty)} records, none with any sequence"
+                )
             raise PlastrFormatError("no sequence found in the pasted FASTA")
         return records
 

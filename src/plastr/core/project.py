@@ -401,7 +401,7 @@ class Project:
                 source_path=self.source_path,
                 reference_path=self.reference_path,
             )
-            with open(path, "w") as fh:
+            with open(path, "w", encoding="utf-8") as fh:
                 fh.write(html)
             record("report", path)
 
