@@ -21,6 +21,7 @@ from plastr.core.scaffold.builder import build_scaffolds, write_scaffolds
 from plastr.core.scaffold.graph_bridge import (
     _bridge_sequence,
     bridge_gap,
+    bridge_pieces,
     find_unbranching_paths,
 )
 from plastr.core.scaffold.plan import (
@@ -33,6 +34,7 @@ from plastr.core.scaffold.plan import (
     ScaffoldPlan,
 )
 from plastr.core.scaffold.reference_guided import scaffold_by_reference
+from plastr.core.sequence import revcomp
 
 pytestmark = pytest.mark.skipif(
     alignment_backend() == "none",
@@ -94,10 +96,15 @@ class TestFastaAgpContract:
             "scaffold_plasmid",
         }
 
-    def test_every_agp_row_describes_its_slice_of_the_fasta(self, demo_graph, demo_plan, demo_built):
-        """The contract that must never break."""
+    def test_every_agp_row_describes_its_slice_of_the_fasta(self, demo_graph, demo_built):
+        """The contract that must never break.
+
+        Every component row names a segment that exists and slices out exactly
+        the sub-range it declares -- including the rows covering sequence
+        recovered from the graph, which are written per segment of the walk
+        rather than as one synthetic component.
+        """
         sequences = dict(demo_built.records)
-        bridges = expected_bridges(demo_graph, demo_plan)
         contig_rows = gap_rows = 0
 
         for row in demo_built.agp_rows:
@@ -108,16 +115,22 @@ class TestFastaAgpContract:
 
             if row.component_type == COMPONENT_CONTIG:
                 assert len(piece) == row.component_end - row.component_beg + 1
-                if row.component_id in demo_graph.segments:
-                    expected = demo_graph[row.component_id].seq_oriented(row.orientation)
-                    assert piece == expected, (
-                        f"{row.object_name} part {row.part_number} does not match "
-                        f"{row.component_id}{row.orientation}"
-                    )
-                else:
-                    # A gap closed with real sequence recovered from the graph.
-                    assert bridges[row.component_id], row.component_id
-                    assert piece == bridges[row.component_id].popleft()
+                assert row.component_id in demo_graph.segments, (
+                    f"AGP names component {row.component_id!r}, which is not a "
+                    "segment -- no consumer could resolve it"
+                )
+                segment = demo_graph[row.component_id]
+                assert 1 <= row.component_beg <= row.component_end <= segment.length
+                # AGP component coordinates are in the forward contig, whatever
+                # the orientation column says; the slice is reverse-complemented
+                # afterwards. Slicing the already-oriented sequence instead
+                # agrees only when nothing was trimmed.
+                forward = segment.sequence[row.component_beg - 1 : row.component_end]
+                expected = revcomp(forward) if row.orientation == "-" else forward
+                assert piece == expected, (
+                    f"{row.object_name} part {row.part_number} does not match "
+                    f"{row.component_id}{row.orientation}"
+                )
                 assert "N" not in piece
                 contig_rows += 1
             else:
@@ -128,7 +141,6 @@ class TestFastaAgpContract:
 
         assert contig_rows == 10  # 9 placed contigs + 1 graph bridge
         assert gap_rows == demo_built.num_gaps == 4
-        assert all(not remaining for remaining in bridges.values())
 
     def test_the_rows_tile_each_scaffold_with_no_gap_or_overlap(self, demo_built):
         by_object = defaultdict(list)
@@ -142,16 +154,24 @@ class TestFastaAgpContract:
             rebuilt = "".join(sequence[r.object_beg - 1 : r.object_end] for r in rows)
             assert rebuilt == sequence
 
-    def test_the_graph_bridge_carries_the_real_repeat_sequence(self, demo_graph, demo_built):
-        bridge_rows = [
+    def test_the_graph_bridge_carries_the_real_repeat_sequence(self, demo_built, demo_graph):
+        """The bridged gap is written as the repeat segment it walks through.
+
+        It used to be one row whose component id was the synthesised string
+        'ctg_repeat+' -- a name no FASTA contains, with an orientation of '+'
+        whatever direction the walk took.
+        """
+        sequences = dict(demo_built.records)
+        # The bridge sits between the first two members of the chromosome
+        # scaffold, i.e. AGP part 2, and covers the repeat in full.
+        row = next(
             r
             for r in demo_built.agp_rows
-            if r.component_type == COMPONENT_CONTIG and r.component_id not in demo_graph.segments
-        ]
-        assert len(bridge_rows) == 1
-        row = bridge_rows[0]
-        assert row.component_id == "ctg_repeat+"
-        sequences = dict(demo_built.records)
+            if r.object_name == "scaffold_chromosome" and r.part_number == 2
+        )
+        assert row.component_id == "ctg_repeat"
+        assert row.orientation == "+"
+        assert (row.component_beg, row.component_end) == (1, 2_400)
         piece = sequences[row.object_name][row.object_beg - 1 : row.object_end]
         assert piece == demo_graph["ctg_repeat"].sequence
         assert len(piece) == 2_400
@@ -776,3 +796,91 @@ def test_a_single_placement_produces_no_warning():
         )
     )
     assert build_scaffolds(g, plan).warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Regressions from reviewing real assemblies
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeAgpNamesRealSegments:
+    """A graph-bridged join used to be one row with a synthesised component id.
+
+    ``"+".join(f"{n}{o}" ...)`` produced 'seg0146-' for a one-step walk and
+    'a+b-' for a two-step one: names present in no FASTA, coordinates that were
+    not coordinates in them, and orientation '+' whichever way the walk ran.
+    """
+
+    def test_pieces_reassemble_the_bridge_exactly(self, demo_graph, demo_plan):
+        for scaffold in demo_plan.scaffolds:
+            members = [m for m in scaffold.members if m.segment in demo_graph.segments]
+            for index, member in enumerate(members[:-1]):
+                if not member.bridge_path:
+                    continue
+                nxt = members[index + 1]
+                bridge = _bridge_sequence(
+                    demo_graph,
+                    (member.segment, member.orientation),
+                    list(member.bridge_path),
+                    (nxt.segment, nxt.orientation),
+                )
+                pieces = bridge_pieces(
+                    demo_graph,
+                    (member.segment, member.orientation),
+                    list(member.bridge_path),
+                )
+                assert pieces is not None
+                rebuilt = ""
+                for name, orient, beg, end in pieces:
+                    forward = demo_graph[name].sequence[beg - 1 : end]
+                    rebuilt += revcomp(forward) if orient == "-" else forward
+                assert rebuilt == bridge
+
+    def test_no_component_id_carries_an_orientation_suffix(self, demo_built, demo_graph):
+        for row in demo_built.agp_rows:
+            if row.component_type != COMPONENT_CONTIG:
+                continue
+            assert not row.component_id.endswith(("+", "-"))
+            assert row.component_id in demo_graph.segments
+
+
+class TestPlacedCountIsHonest:
+    def test_unplaced_singletons_do_not_count_as_placed(self):
+        plan = ScaffoldPlan(method="reference")
+        plan.scaffolds.append(
+            Scaffold(
+                name="s1",
+                source="reference",
+                members=[
+                    ScaffoldMember(segment="a", orientation="+"),
+                    ScaffoldMember(segment="b", orientation="+"),
+                ],
+            )
+        )
+        plan.scaffolds.append(
+            Scaffold(
+                name="s_unplaced_c",
+                source="unplaced",
+                members=[ScaffoldMember(segment="c", orientation="+")],
+            )
+        )
+        plan.unplaced = ["c"]
+
+        assert plan.placed_count == 2
+        assert plan.scaffold_count == 1
+        # placed + unplaced must partition the assembly, never exceed it
+        assert plan.placed_count + len(plan.unplaced) == 3
+        data = plan.to_dict()
+        assert data["placed_count"] == 2
+        assert data["scaffold_count"] == 1
+        assert data["record_count"] == 2
+
+
+class TestScaffoldNamesAreUnique:
+    def test_references_that_sanitise_alike_get_distinct_names(self, demo_graph):
+        from plastr.core.scaffold.reference_guided import _unique
+
+        used: set[str] = set()
+        assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1"
+        assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1_2"
+        assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1_3"

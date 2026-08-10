@@ -121,26 +121,35 @@ def build_scaffolds(
                 joined_by_graph = valid
                 if bridge:
                     pieces.append(bridge)
-                    end = position + len(bridge) - 1
-                    rows.append(
-                        AgpRow(
-                            object_name=scaffold.name,
-                            object_beg=position,
-                            object_end=end,
-                            part_number=part,
-                            component_type=COMPONENT_CONTIG,
-                            component_id="+".join(
-                                f"{n}{o}" for n, o in member.bridge_path
+                    # One row per segment the walk passes through, naming the
+                    # real segment and the sub-range actually used. A single
+                    # synthesised row (component id "seg0146-", or "a+b-" for a
+                    # multi-step walk) named a component present in no FASTA,
+                    # with coordinates that were not coordinates in it and an
+                    # orientation of '+' even when the walk went backwards --
+                    # so a strict AGP consumer rejected the file and a lenient
+                    # one rebuilt the wrong strand.
+                    for name, orient, beg, comp_end in _bridge_rows(
+                        graph, member, bridge
+                    ):
+                        span = comp_end - beg + 1
+                        end = position + span - 1
+                        rows.append(
+                            AgpRow(
+                                object_name=scaffold.name,
+                                object_beg=position,
+                                object_end=end,
+                                part_number=part,
+                                component_type=COMPONENT_CONTIG,
+                                component_id=name,
+                                component_beg=beg,
+                                component_end=comp_end,
+                                orientation=orient,
                             )
-                            or f"{member.segment}_bridge",
-                            component_beg=1,
-                            component_end=len(bridge),
-                            orientation="+",
                         )
-                    )
+                        position = end + 1
+                        part += 1
                     out.bridged_bases += len(bridge)
-                    position = end + 1
-                    part += 1
                 if joined_by_graph:
                     # Either bridged, or genuinely adjacent: no gap belongs here,
                     # but the next member must give up the bases it shares with
@@ -191,6 +200,25 @@ def build_scaffolds(
     _warn_about_repeated_contigs(plan, out)
     _verify(out)
     return out
+
+
+def _bridge_rows(
+    graph: AssemblyGraph, member, bridge: str
+) -> list[tuple[str, str, int, int]]:
+    """AGP component rows describing ``bridge``, one per segment of the walk.
+
+    Falls back to a single row naming the flanking contig if the decomposition
+    does not add up to the bridge exactly -- the FASTA is the truth, and an AGP
+    that tiles it wrongly would be worse than a coarse one.
+    """
+    from .graph_bridge import bridge_pieces
+
+    slices = bridge_pieces(
+        graph, (member.segment, member.orientation), list(member.bridge_path)
+    )
+    if slices and sum(end - beg + 1 for _n, _o, beg, end in slices) == len(bridge):
+        return slices
+    return [(member.segment, "+", 1, len(bridge))]
 
 
 def _bridge_sequence_for(

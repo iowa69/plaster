@@ -78,6 +78,41 @@ def bridge_gap(
     return best_path, best_sequence
 
 
+def bridge_pieces(
+    graph: AssemblyGraph,
+    left: tuple[str, str],
+    middle: list[tuple[str, str]],
+) -> list[tuple[str, str, int, int]] | None:
+    """Break a bridge into the per-segment slices it is actually made of.
+
+    Returns ``(name, orientation, component_beg, component_end)`` per step, in
+    1-based inclusive coordinates *within that segment*, so the AGP can name a
+    real segment and a real sub-range instead of a synthesised component id.
+
+    The bridge sequence is the concatenation of the middle segments, each with
+    its leading link overlap trimmed, so this decomposition is exact by
+    construction -- and checked against ``_bridge_sequence`` in the tests.
+    """
+    out: list[tuple[str, str, int, int]] = []
+    previous = left
+    for name, orient in middle:
+        segment = graph.segments.get(name)
+        if segment is None or not segment.has_sequence:
+            return None
+        overlap = graph.overlap_between(previous[0], previous[1], name, orient)
+        trim = min(overlap, segment.length)
+        if trim < segment.length:
+            # Trimming the front of the oriented sequence is the back of the
+            # contig when the step is reverse-complemented.
+            if orient == "-":
+                beg, end = 1, segment.length - trim
+            else:
+                beg, end = trim + 1, segment.length
+            out.append((name, orient, beg, end))
+        previous = (name, orient)
+    return out
+
+
 def _bridge_sequence(
     graph: AssemblyGraph,
     left: tuple[str, str],

@@ -58,6 +58,10 @@ def scaffold_by_reference(
     all_contigs = set(graph.segments)
     placed_names = set(placements)
     unplaced = sorted(all_contigs - placed_names)
+    # Scaffold names double as FASTA ids and AGP object names, so two reference
+    # sequences that sanitise to the same string must not collide: that wrote
+    # duplicate FASTA headers and folded two objects into one non-tiling AGP.
+    used_names: set[str] = set()
 
     # Group by reference sequence and order along it.
     by_ref: dict[str, list[Alignment]] = {}
@@ -86,10 +90,11 @@ def scaffold_by_reference(
             continue
 
         scaffold = Scaffold(
-            name=f"{scaffold_prefix}_{_safe(ref)}",
+            name=_unique(f"{scaffold_prefix}_{_safe(ref)}", used_names),
             source="reference",
             reference=ref,
         )
+        overlap_flags: set[int] = set()
         for i, aln in enumerate(kept):
             member = ScaffoldMember(
                 segment=aln.query,
@@ -103,13 +108,28 @@ def scaffold_by_reference(
                 nxt = kept[i + 1]
                 raw_gap = nxt.r_st - aln.r_en
                 if raw_gap <= 0:
-                    member.overlaps_previous = True
+                    # The overlap belongs to the contig on the right of the
+                    # pair -- it is the one that starts before the previous one
+                    # ended. Flagging the left member put the mark one row too
+                    # early, including on the first member of a scaffold, which
+                    # has no previous member at all.
+                    pending_overlap = True
                     member.gap_after = min_gap
                     member.gap_evidence = GAP_DEFAULT
                 else:
+                    pending_overlap = False
                     member.gap_after = max(raw_gap, min_gap)
                     member.gap_evidence = GAP_REFERENCE
+            else:
+                pending_overlap = False
             scaffold.members.append(member)
+            if pending_overlap:
+                overlap_flags.add(len(scaffold.members))  # index of the next member
+
+        for index in overlap_flags:
+            if index < len(scaffold.members):
+                scaffold.members[index].overlaps_previous = True
+        overlap_flags.clear()
 
         plan.scaffolds.append(scaffold)
 
@@ -119,7 +139,9 @@ def scaffold_by_reference(
         for name in unplaced:
             plan.scaffolds.append(
                 Scaffold(
-                    name=f"{scaffold_prefix}_unplaced_{_safe(name)}",
+                    name=_unique(
+                        f"{scaffold_prefix}_unplaced_{_safe(name)}", used_names
+                    ),
                     source="unplaced",
                     members=[ScaffoldMember(segment=name, orientation="+")],
                 )
@@ -133,10 +155,14 @@ def scaffold_by_reference(
                 f"{filled} gap(s) replaced with real sequence recovered from the assembly graph"
             )
 
-    plan.notes.append(
-        f"{plan.placed_count} contig(s) placed on {len(plan.scaffolds)} scaffold(s); "
+    carried = len(plan.scaffolds) - plan.scaffold_count
+    note = (
+        f"{plan.placed_count} contig(s) placed on {plan.scaffold_count} scaffold(s); "
         f"{len(unplaced)} unplaced, {len(plan.redundant)} redundant"
     )
+    if carried:
+        note += f" ({carried} unplaced contig(s) carried through as single records)"
+    plan.notes.append(note)
     return plan
 
 
@@ -175,3 +201,14 @@ def apply_graph_bridges(
 
 def _safe(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+
+
+def _unique(name: str, used: set[str]) -> str:
+    """``name``, suffixed if something already claimed it."""
+    candidate = name
+    suffix = 2
+    while candidate in used:
+        candidate = f"{name}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate

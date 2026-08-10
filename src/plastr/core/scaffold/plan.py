@@ -77,7 +77,21 @@ class ScaffoldPlan:
 
     @property
     def placed_count(self) -> int:
-        return sum(len(s.members) for s in self.scaffolds)
+        """Contigs actually anchored to something, not carried through.
+
+        ``include_unplaced`` appends one single-member scaffold per unplaced
+        contig so the exported FASTA is a complete assembly. Counting those as
+        placed made the summary contradict itself -- "217 placed ... 138
+        unplaced" out of a 217-contig assembly.
+        """
+        return sum(
+            len(s.members) for s in self.scaffolds if s.source != "unplaced"
+        )
+
+    @property
+    def scaffold_count(self) -> int:
+        """Scaffolds that join something, excluding pass-through singletons."""
+        return sum(1 for s in self.scaffolds if s.source != "unplaced")
 
     def member_index(self) -> dict[str, tuple[str, int]]:
         """segment -> (scaffold name, position)."""
@@ -95,7 +109,10 @@ class ScaffoldPlan:
             "redundant": list(self.redundant),
             "notes": list(self.notes),
             "placed_count": self.placed_count,
-            "scaffold_count": len(self.scaffolds),
+            "scaffold_count": self.scaffold_count,
+            #: Every record the export will write, including the single-contig
+            #: pass-throughs. `scaffold_count` counts only real joins.
+            "record_count": len(self.scaffolds),
         }
 
     @classmethod
