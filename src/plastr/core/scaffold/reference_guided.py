@@ -154,6 +154,35 @@ def scaffold_by_reference(
             plan.notes.append(
                 f"{filled} gap(s) replaced with real sequence recovered from the assembly graph"
             )
+        # A segment spliced into a bridge is already written inside a scaffold,
+        # so keeping its own pass-through record too writes that sequence
+        # twice: 16-26 kb per genome on real data, inflating assembly length
+        # and producing duplicate hits downstream.
+        consumed = {
+            name
+            for scaffold in plan.scaffolds
+            for member in scaffold.members
+            for name, _orient in member.bridge_path
+        }
+        if consumed:
+            before = len(plan.scaffolds)
+            plan.scaffolds = [
+                s
+                for s in plan.scaffolds
+                if not (
+                    s.source == "unplaced"
+                    and len(s.members) == 1
+                    and s.members[0].segment in consumed
+                )
+            ]
+            plan.unplaced = [n for n in plan.unplaced if n not in consumed]
+            unplaced = plan.unplaced
+            dropped = before - len(plan.scaffolds)
+            if dropped:
+                plan.notes.append(
+                    f"{dropped} contig(s) already written inside a graph bridge are "
+                    "not repeated as separate records"
+                )
 
     carried = len(plan.scaffolds) - plan.scaffold_count
     note = (

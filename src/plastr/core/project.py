@@ -351,7 +351,7 @@ class Project:
             if clashes:
                 raise PlastrError(
                     f"{outdir} already contains {', '.join(clashes)}. "
-                    "Choose another directory, or pass overwrite to replace them."
+                    "Choose another directory, or pass --overwrite to replace them."
                 )
         written: list[dict] = []
 

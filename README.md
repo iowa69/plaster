@@ -231,6 +231,8 @@ Plastr prints a warning if you bind it anywhere other than loopback.
 
 Exports refuse to overwrite existing files unless you ask them to, since the
 output directory is the one place the tool can destroy work you did not create.
+Pass `--overwrite` to `plastr scaffold` or `plastr export` when replacing an
+earlier run is what you want.
 
 ---
 

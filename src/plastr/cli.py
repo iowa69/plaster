@@ -312,7 +312,7 @@ def cmd_scaffold(args) -> int:
     for warning in preview["warnings"]:
         print(f"  ! {warning}", file=sys.stderr)
 
-    written = project.export(args.outdir, args.export)
+    written = project.export(args.outdir, args.export, overwrite=args.overwrite)
     print(f"\n  written to {os.path.abspath(args.outdir)}/")
     for item in written:
         print(f"    {item['kind']:<12} {os.path.basename(item['path']):<20} {item['bytes']:>12,} bytes")
@@ -328,7 +328,7 @@ def cmd_export(args) -> int:
             project.build_plan(method="reference", threads=args.threads)
         else:
             project.build_plan(method="graph")
-    written = project.export(args.outdir, args.export)
+    written = project.export(args.outdir, args.export, overwrite=args.overwrite)
     print(f"  written to {os.path.abspath(args.outdir)}/")
     for item in written:
         print(f"    {item['kind']:<12} {os.path.basename(item['path']):<20} {item['bytes']:>12,} bytes")
@@ -556,6 +556,15 @@ def _add_common(parser: argparse.ArgumentParser, assembly_required: bool = True)
     parser.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
 
 
+def _add_overwrite(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace files that already exist in the output directory "
+        "(by default the export stops rather than destroying them)",
+    )
+
+
 def _add_reference(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-r", "--reference", help="reference FASTA")
     parser.add_argument(
@@ -632,6 +641,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=["scaffolds", "agp", "gfa", "csv", "report"],
         choices=["scaffolds", "agp", "gfa", "csv", "report", "session"],
     )
+    _add_overwrite(p_sc)
     p_sc.set_defaults(func=cmd_scaffold)
 
     p_ex = sub.add_parser("export", help="write artefacts without the GUI")
@@ -644,6 +654,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=["gfa", "csv", "report"],
         choices=["scaffolds", "agp", "gfa", "csv", "report", "session"],
     )
+    _add_overwrite(p_ex)
     p_ex.set_defaults(func=cmd_export)
 
     p_se = sub.add_parser("search", help="find a sequence in the assembly")
