@@ -793,6 +793,11 @@ export class LayoutController {
 
   _handle(msg) {
     if (!msg || !msg.type) return;
+    // Discard anything belonging to a run we have already superseded. Pressing
+    // Rearrange while a layout was running used to let the old run's 'done'
+    // land after the new one had started, so the UI showed "settled" and hid
+    // Stop while the worker was still iterating.
+    if (msg.runId !== undefined && this._runId !== undefined && msg.runId !== this._runId) return;
     if (msg.type === 'tick' || msg.type === 'done') {
       const g = this.graph;
       if (msg.px && msg.py && msg.px.length === g.px.length) {
@@ -826,6 +831,7 @@ export class LayoutController {
     if (!g || g.isEmpty) { this.onError('Nothing to lay out — no graph is loaded'); return false; }
     this._ensure();
     this.stop();
+    this._runId = (this._runId || 0) + 1;
 
     if (this.dirty) {
       const data = g.toLayoutArrays();
@@ -857,7 +863,7 @@ export class LayoutController {
     this.onState(true);
 
     if (this.worker) {
-      const msg = { cmd: 'run', mode, subset, params: o.params || {} };
+      const msg = { cmd: 'run', mode, subset, params: o.params || {}, runId: this._runId };
       this._post(msg, subset ? [subset.buffer] : []);
     } else if (this.fallback) {
       const ok = this.fallback.begin(mode, subset, o.params || {});
@@ -898,7 +904,7 @@ export class LayoutController {
     this.running = false;
     if (this._fallbackTimer) { clearTimeout(this._fallbackTimer); this._fallbackTimer = 0; }
     if (this.fallback) this.fallback.stop();
-    this._post({ cmd: 'stop' });
+    this._post({ cmd: 'stop', runId: this._runId });
     this.onState(false);
   }
 

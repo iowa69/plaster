@@ -354,9 +354,14 @@ export class GraphModel {
   _buildComponents() {
     const n = this.segments.length;
     const groups = new Map();
+    // Only fall back to union-find when the server genuinely did not supply the
+    // field. Treating "every id happens to be 0" as missing renumbered the ids
+    // of a single-component view to local indices, so filtering to a component
+    // and then filtering again asked the server for a component number it had
+    // never issued, and the canvas went blank with no error.
     let usable = false;
     for (const seg of this.segments) {
-      if (seg.component !== 0 && seg.component !== null && seg.component !== undefined) usable = true;
+      if (seg.component !== null && seg.component !== undefined) { usable = true; break; }
     }
     if (!usable && this.links.length) {
       // Union-find over links.

@@ -258,6 +258,14 @@ footer.doc {
   {% endfor %}
 </nav>
 
+{% if comparison and subject %}
+<div class="callout info" id="subject-note">
+  Every tab except <strong>Comparison</strong> describes
+  <code>{{ subject }}</code> alone. Open the Comparison tab to see all
+  assemblies side by side.
+</div>
+{% endif %}
+
 <!-- ==================== SUMMARY ==================== -->
 <section class="panel" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
   <h2>Summary</h2>

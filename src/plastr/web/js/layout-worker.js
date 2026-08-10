@@ -26,6 +26,8 @@ import { LayoutEngine } from './layout.js';
 const engine = new LayoutEngine();
 let running = false;
 let timer = 0;
+/** Identifies the current run so stale results can be discarded. */
+let runId = 0;
 /** Milliseconds of computation per slice before yielding to the message queue. */
 const SLICE_MS = 12;
 
@@ -43,6 +45,10 @@ function emit(type, res) {
     iter: res.iter,
     alpha: res.alpha,
     mode: engine.mode,
+    // Echoed so the controller can discard messages from a run it has
+    // already replaced; without it the previous run's 'done' arrives after
+    // the new one starts and reports the layout as finished.
+    runId,
   }, [px.buffer, py.buffer]);
 }
 
@@ -93,6 +99,7 @@ self.onmessage = (ev) => {
 
       case 'run': {
         stop();
+        runId = Number(msg.runId) || runId + 1;
         if (!engine.ready) {
           self.postMessage({ type: 'error', message: 'layout: no graph uploaded yet' });
           break;
@@ -109,8 +116,9 @@ self.onmessage = (ev) => {
 
       case 'stop':
         stop();
+        if (Number.isFinite(msg.runId)) runId = Number(msg.runId);
         if (engine.ready) emit('done', { iter: engine.iter, alpha: 0 });
-        else self.postMessage({ type: 'done', iter: 0, alpha: 0, mode: engine.mode });
+        else self.postMessage({ type: 'done', iter: 0, alpha: 0, mode: engine.mode, runId });
         break;
 
       default:

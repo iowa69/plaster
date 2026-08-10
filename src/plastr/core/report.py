@@ -447,8 +447,16 @@ def svg_nx(curve: Sequence[Sequence[float]] | None, n50: int | None = None) -> s
     return plot.render()
 
 
-def svg_histogram(histogram: Sequence[Sequence[int]] | None) -> str:
-    """Contig length histogram on a log x axis."""
+def svg_histogram(
+    histogram: Sequence[Sequence[int]] | None, largest: int | None = None
+) -> str:
+    """Contig length histogram on a log x axis.
+
+    ``largest`` is the longest contig. Without it the axis maximum has to be
+    reverse-engineered from the bin lower bounds, which the metrics emit as
+    truncated integers -- so the recovered ratio came out slightly small and
+    the last bin claimed an upper bound below the contig it was counting.
+    """
     bins = [(float(a), int(b)) for a, b in (histogram or [])]
     bins = [(max(lo, 1.0), count) for lo, count in bins]
     if not bins:
@@ -462,6 +470,8 @@ def svg_histogram(histogram: Sequence[Sequence[int]] | None) -> str:
     else:
         ratio = 10.0
         hi = lo * 10
+    if largest:
+        hi = max(hi, float(largest))
 
     plot = _Plot(
         width=1000, height=320, margin=(18, 22, 48, 78),
@@ -677,7 +687,10 @@ def render_charts(
     return {
         "cumulative": svg_cumulative(getattr(metrics, "cumulative_curve", None)),
         "nx": svg_nx(getattr(metrics, "nx_curve", None), getattr(metrics, "n50", None)),
-        "histogram": svg_histogram(getattr(metrics, "length_histogram", None)),
+        "histogram": svg_histogram(
+            getattr(metrics, "length_histogram", None),
+            getattr(metrics, "largest_contig", None),
+        ),
         "ideogram": svg_ideogram(reference_report) if reference_report else "",
         "scaffold_n50": (
             svg_scaffold_n50(getattr(metrics, "n50", None), scaffold_n50)
@@ -866,12 +879,18 @@ def _scaffold_context(plan: Any, built: Any, metrics: AssemblyMetrics) -> dict[s
             }
         )
 
+    all_records = len(getattr(plan, "scaffolds", None) or [])
+    joined = getattr(plan, "scaffold_count", all_records)
     summary = [
         _row("Method", str(getattr(plan, "method", None) or DASH)),
-        _row("# scaffolds", fmt_int(len(getattr(plan, "scaffolds", None) or []))),
+        _row("# scaffolds", fmt_int(joined), "contigs joined to at least one other"),
         _row("# contigs placed", fmt_int(getattr(plan, "placed_count", None))),
-        _row("# contigs unplaced", fmt_int(len(getattr(plan, "unplaced", None) or []))),
-        _row("# contigs redundant", fmt_int(len(getattr(plan, "redundant", None) or []))),
+        _row("# contigs unplaced", fmt_int(len(getattr(plan, "unplaced", None) or [])),
+             "kept as single-contig records so the FASTA is a complete assembly"),
+        _row("# contigs redundant", fmt_int(len(getattr(plan, "redundant", None) or [])),
+             "another contig claimed the same reference span; not written"),
+        _row("# records written", fmt_int(all_records),
+             "scaffolds plus the unplaced contigs carried through"),
     ]
     if built is not None:
         summary += [
@@ -994,6 +1013,7 @@ def build_report(
     title: str = "Plastr report",
     source_path: str | os.PathLike[str] | None = None,
     reference_path: str | os.PathLike[str] | None = None,
+    subject: str | None = None,
 ) -> str:
     """Render a complete, standalone HTML QC report.
 
@@ -1046,6 +1066,10 @@ def build_report(
         ),
         "scaffold": scaffold,
         "comparison": comparison_table,
+        #: When several assemblies are compared, every tab except Comparison
+        #: describes just this one, and says so rather than leaving the reader
+        #: to assume the numbers cover all of them.
+        "subject": subject,
         "charts": charts,
         "kind_colours": KIND_COLOURS,
         "dash": DASH,

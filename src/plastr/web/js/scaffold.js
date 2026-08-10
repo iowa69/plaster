@@ -95,6 +95,19 @@ export function initScaffoldPanel(app) {
     }
     plan.scaffold_count = plan.scaffolds.length;
     plan.placed_count = placed;
+    // Names reach the FASTA and the AGP, so they must stay unique however the
+    // plan was edited or restored.
+    const seen = new Set();
+    plan.scaffolds.forEach((s, i) => {
+      let name = String(s.name || `scaffold_${i + 1}`).trim().replace(/\s+/g, '_');
+      if (seen.has(name)) {
+        let n = 2;
+        while (seen.has(`${name}_${n}`)) n += 1;
+        name = `${name}_${n}`;
+      }
+      seen.add(name);
+      s.name = name;
+    });
     return plan;
   }
 
@@ -212,7 +225,21 @@ export function initScaffoldPanel(app) {
         title: 'Scaffold name (used in the exported FASTA/AGP)',
       });
       nameInput.addEventListener('change', () => {
-        s.name = nameInput.value.trim() || `scaffold_${si + 1}`;
+        // The name becomes a FASTA id and an AGP object name, so whitespace
+        // splits the id in two and a duplicate collapses two AGP objects into
+        // one that no longer tiles. Fix it here rather than at export time.
+        const cleaned = nameInput.value.trim().replace(/\s+/g, '_')
+          .replace(/[^A-Za-z0-9._|-]/g, '_');
+        let candidate = cleaned || `scaffold_${si + 1}`;
+        const taken = new Set(plan.scaffolds.filter((o) => o !== s).map((o) => o.name));
+        if (taken.has(candidate)) {
+          let n = 2;
+          while (taken.has(`${candidate}_${n}`)) n += 1;
+          candidate = `${candidate}_${n}`;
+          app.toast(`That name is already used; renamed to ${candidate}`, 'warn');
+        }
+        s.name = candidate;
+        nameInput.value = candidate;
         save();
       });
 

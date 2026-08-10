@@ -79,6 +79,10 @@ class ReferenceReport:
     misassembled_contigs_length: int = 0
     per_reference_coverage: dict[str, float] = field(default_factory=dict)
     coverage_blocks: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+    #: Length of each reference sequence. Without it a consumer drawing a
+    #: coverage bar has to infer the length from the blocks and the percentage,
+    #: which is wrong by exactly the uncovered tail.
+    reference_sizes: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -329,6 +333,7 @@ def evaluate_against_reference(
     report = ReferenceReport()
     report.reference_length = sum(reference_lengths.values())
     report.reference_sequences = len(reference_lengths)
+    report.reference_sizes = dict(reference_lengths)
     genome = genome_size or report.reference_length
 
     primary = [
@@ -338,7 +343,12 @@ def evaluate_against_reference(
     ]
 
     # --- coverage of the reference ---
-    per_ref: dict[str, list[tuple[int, int]]] = {}
+    # Seed every reference sequence, not just the ones something aligned to. A
+    # replicon with no coverage at all is the most important thing the report
+    # can tell you -- a plasmid the assembly missed entirely -- and dropping it
+    # made the ideogram show 100% on every bar it drew while the caption
+    # counted all of them.
+    per_ref: dict[str, list[tuple[int, int]]] = {name: [] for name in reference_lengths}
     for aln in primary:
         per_ref.setdefault(aln.ref, []).append((aln.r_st, aln.r_en))
     covered = 0

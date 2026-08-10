@@ -483,14 +483,18 @@ def cmd_compare(args) -> int:
     if args.html:
         from .core.report import build_report
 
-        first = next(iter(projects.values()))
+        first_label = next(iter(projects))
+        first = projects[first_label]
         html = build_report(
             first.metrics(),
             reference_report=first.reference_report,
             comparison=named,
             title="Plastr comparison",
-            source_path=", ".join(args.assemblies),
+            # Only the Comparison tab covers every assembly; the rest describe
+            # this one, so name it rather than listing them all in the header.
+            source_path=first.source_path,
             reference_path=args.reference,
+            subject=first_label,
         )
         with open(args.html, "w", encoding="utf-8") as fh:
             fh.write(html)

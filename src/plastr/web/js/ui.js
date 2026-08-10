@@ -444,7 +444,11 @@ export function createApp() {
     const coverage = Object.entries(report.per_reference_coverage || {}).map(([ref, pct]) => {
       const blocks = (report.coverage_blocks || {})[ref] || [];
       const span = blocks.length ? Math.max(...blocks.map((b) => b[1])) : 0;
-      const total = pct > 0 ? (span / (pct / 100)) : span;
+      // The real length, not one inferred from span/percentage -- that
+      // inference is short by exactly the uncovered tail, so a replicon
+      // covered to 95.81% drew its bar as if it were 100% full.
+      const total = (report.reference_sizes || {})[ref]
+        || (pct > 0 ? (span / (pct / 100)) : span);
       const bars = blocks.map(([a, b]) => {
         const left = total ? (a / total) * 100 : 0;
         const width = total ? Math.max(0.25, ((b - a) / total) * 100) : 0;
@@ -688,6 +692,20 @@ export function createApp() {
     $('export-results').innerHTML =
       `<div class="results"><ul>${result.written.map((w) =>
         `<li><code>${esc(w.path)}</code> <span class="muted">${fmtInt(w.bytes)} bytes</span></li>`).join('')}</ul></div>`;
+    // Scaffolds and AGP are skipped server-side when there is no plan, so a
+    // request for them alone came back empty and still toasted success.
+    const wrote = new Set(result.written.map((w) => w.kind));
+    const skipped = what.filter((k) => !wrote.has(k));
+    if (skipped.length) {
+      const needsPlan = skipped.filter((k) => k === 'scaffolds' || k === 'agp');
+      app.toast(
+        `Wrote ${result.written.length} file(s); ${skipped.join(', ')} not written`
+        + (needsPlan.length ? ' — build a scaffold plan first' : ''),
+        result.written.length ? 'warn' : 'error',
+        9000,
+      );
+      return;
+    }
     app.toast(`Wrote ${result.written.length} file(s) to ${outdir}`, 'ok', 6000);
   });
 
@@ -699,7 +717,27 @@ export function createApp() {
       ['csv', 'segments.csv'], ['report', 'report.html'], ['session', 'session.json'],
     ];
     box.innerHTML = `<div class="dl-row">${kinds.map(([kind, label]) =>
-      `<a href="${esc(api.downloadUrl(kind))}" download>${esc(label)}</a>`).join('')}</div>`;
+      `<a href="${esc(api.downloadUrl(kind))}" data-kind="${esc(kind)}" download>${esc(label)}</a>`).join('')}</div>`;
+    // A plain <a download> never sees a non-2xx: the browser either cancels or
+    // saves the JSON error body under a .fasta name, with nothing shown in the
+    // app. Fetch it instead so the server's message reaches the user.
+    box.querySelectorAll('a[data-kind]').forEach((a) => {
+      a.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        try {
+          const res = await fetch(a.href);
+          if (!res.ok) {
+            let message = `HTTP ${res.status}`;
+            try { message = (await res.json()).error || message; } catch { /* not JSON */ }
+            app.showError(message);
+            return;
+          }
+          download(await res.blob(), a.textContent.trim());
+        } catch (err) {
+          app.showError((err && err.message) || String(err));
+        }
+      });
+    });
   }
 
   /* ---- image export ---- */
@@ -873,7 +911,9 @@ export function createApp() {
     on('rr-apply', 'click', () => startLayout({ mode: radio('rr-mode') || 'force', scope: radio('rr-scope') || 'all' }));
     on('rr-stop', 'click', () => app.stopLayout());
     on('btn-stop-layout', 'click', () => app.stopLayout());
-    for (const [slider, out, dp] of [['rr-repulsion', 'rr-rep-out', 1], ['rr-linkstr', 'rr-link-out', 2], ['rr-gravity', 'rr-grav-out', 3]]) {
+    // Decimals must match each slider's step, or the readout disagrees with the
+    // value actually used -- repulsion steps by 0.005 and read '0.1' at 0.05.
+    for (const [slider, out, dp] of [['rr-repulsion', 'rr-rep-out', 3], ['rr-linkstr', 'rr-link-out', 2], ['rr-gravity', 'rr-grav-out', 3]]) {
       on(slider, 'input', (e) => { $(out).value = Number(e.target.value).toFixed(dp); });
     }
     document.addEventListener('click', (e) => {
