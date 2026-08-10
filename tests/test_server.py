@@ -428,3 +428,64 @@ def test_csv_download_leaves_no_temporary_file(client, tmp_path, monkeypatch):
     assert r.status_code == 200
     assert "name,length" in r.text
     assert set(tmp_path.iterdir()) == before, "download left a temp file behind"
+
+
+# ---------------------------------------------------------------------------
+# Regressions from reviewing the API against a real graph
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicit_zero_is_not_replaced_by_the_default(client):
+    """`body.get(k, default) or default` silently turned every 0 into default."""
+    r = client.post("/api/scaffold", json={"method": "graph", "min_gap": 0})
+    assert r.status_code == 200
+    # min_gap 0 must not come back as the 100-bp default result
+    zero = r.json()["preview"]["gap_bases"]
+    r = client.post("/api/scaffold", json={"method": "graph", "min_gap": 100})
+    assert r.status_code == 200
+    assert zero <= r.json()["preview"]["gap_bases"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"path": "REF", "min_identity": 90},
+        {"path": "REF", "min_identity": -1},
+        {"path": "REF", "preset": "nonsense"},
+    ],
+)
+def test_reference_rejects_out_of_range_and_unknown_options(client, demo_paths, body):
+    body = dict(body, path=str(demo_paths["reference"]))
+    r = client.post("/api/reference", json=body)
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/api/settings", {"min_contig": "abc"}),
+        ("/api/op", {"op": "split", "args": {}}),
+        ("/api/op", {"op": "split", "args": {"name": "x", "positions": ["y"]}}),
+        ("/api/op", {"op": "delete", "args": [1, 2]}),
+        ("/api/scaffold", {"min_identity": 5}),
+    ],
+)
+def test_malformed_bodies_are_client_errors_not_500s(client, path, body):
+    r = client.post(path, json=body)
+    assert 400 <= r.status_code < 500, r.text
+    assert "error" in r.json()
+
+
+def test_put_scaffold_rejects_a_non_list(client):
+    r = client.put("/api/scaffold", json={"scaffolds": "not-a-list"})
+    assert r.status_code == 400
+    assert "error" in r.json()
+
+
+def test_query_validation_uses_the_documented_envelope(client):
+    """FastAPI's own 422 body has no 'error' key, so the UI showed HTTP 422."""
+    r = client.get("/api/graph", params={"max_nodes": 10_000_000})
+    assert r.status_code == 400
+    body = r.json()
+    assert "error" in body and "max_nodes" in body["error"]

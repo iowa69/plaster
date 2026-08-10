@@ -10,14 +10,18 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..core.analysis import align as align_mod
 from ..core.analysis import search as search_mod
 from ..core.errors import PlastrError, PlastrFormatError, MissingDependencyError
 from ..core.io import gfa as gfa_mod
@@ -29,6 +33,34 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 # The project is mutated from request handlers; a lock keeps a slow alignment
 # from racing a graph edit.
 _lock = threading.RLock()
+
+
+def _num(body: dict, key: str, default, cast, low=None, high=None, label=None):
+    """Read a numeric field, honouring an explicit zero.
+
+    ``body.get(key, default) or default`` looks harmless and silently turns
+    every explicit 0 into the default -- a request for ``min_gap: 0`` came back
+    byte-identical to ``min_gap: 100``.
+    """
+    value = body.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        out = cast(value)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"{label or key} must be a number, got {value!r}", "detail": ""},
+        ) from None
+    if (low is not None and out < low) or (high is not None and out > high):
+        span = f"between {low} and {high}" if low is not None and high is not None else (
+            f"at least {low}" if high is None else f"at most {high}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"{label or key} must be {span}, got {out}", "detail": ""},
+        )
+    return out
 
 
 def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
@@ -56,6 +88,30 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def _http_error(_request: Request, exc: HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail:
+            content = {"error": detail["error"], "detail": detail.get("detail", "")}
+        else:
+            content = {"error": str(detail), "detail": ""}
+        return JSONResponse(status_code=exc.status_code, content=content)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_request: Request, exc: RequestValidationError):
+        # docs/API.md promises {"error", "detail"} on every 4xx. FastAPI's own
+        # 422 body is a list under "detail", which the UI rendered as
+        # "HTTP 422 Unprocessable Entity" or "[object Object]".
+        first = (exc.errors() or [{}])[0]
+        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body") or "request"
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"{where}: {first.get('msg', 'invalid value')}",
+                "detail": "validation error",
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _starlette_error(_request: Request, exc: StarletteHTTPException):
         detail = exc.detail
         if isinstance(detail, dict) and "error" in detail:
             content = {"error": detail["error"], "detail": detail.get("detail", "")}
@@ -97,14 +153,16 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         with _lock:
             p = proj()
             if "min_contig" in body:
-                p.min_contig = max(0, int(body.get("min_contig") or 0))
+                # A negative length is meaningless rather than wrong, so clamp
+                # it; only a non-number is rejected.
+                p.min_contig = max(0, _num(body, "min_contig", 0, int))
             if "circular_references" in body:
                 p.circular_references = bool(body["circular_references"])
             if "primary_only" in body:
                 p.primary_only = bool(body["primary_only"])
             if "genome_size" in body:
                 value = body["genome_size"]
-                p.genome_size = int(value) if value else None
+                p.genome_size = _num(body, "genome_size", None, int, 1) if value else None
             return _qc_settings(p)
 
     @app.post("/api/load")
@@ -237,12 +295,18 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                 p.circular_references = bool(body["circular_references"])
             if "primary_only" in body:
                 p.primary_only = bool(body["primary_only"])
+            preset = body.get("preset") or align_mod.DEFAULT_PRESET
+            if preset not in align_mod.PRESETS:
+                fail(
+                    f"unknown preset {preset!r}; choose one of "
+                    f"{', '.join(align_mod.PRESETS)}"
+                )
             report = p.set_reference(
                 str(path),
-                preset=body.get("preset") or "asm10",
-                min_identity=float(body.get("min_identity", 0.0) or 0.0),
-                min_length=int(body.get("min_length", 200) or 200),
-                threads=int(body.get("threads") or app.state.threads),
+                preset=preset,
+                min_identity=_num(body, "min_identity", 0.0, float, 0.0, 1.0),
+                min_length=_num(body, "min_length", 200, int, 0),
+                threads=_num(body, "threads", app.state.threads, int, 1, 512),
             )
             return {
                 "status": "aligned",
@@ -274,9 +338,17 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         op = body.get("op")
         if not op:
             fail("no operation given")
+        args = body.get("args") or {}
+        if not isinstance(args, dict):
+            fail("'args' must be an object")
         with _lock:
             p = proj()
-            record = p.apply_operation(str(op), body.get("args") or {})
+            try:
+                record = p.apply_operation(str(op), args)
+            except (KeyError, TypeError) as exc:
+                fail(f"operation {op!r} is missing or misuses an argument: {exc}")
+            except ValueError as exc:
+                fail(f"operation {op!r} got a bad argument: {exc}")
             return {
                 "applied": op,
                 "count": record.get("count", 0),
@@ -303,12 +375,15 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         body = body or {}
         with _lock:
             p = proj()
+            method = body.get("method") or "reference"
+            if method not in ("reference", "graph"):
+                fail(f"unknown method {method!r}; choose 'reference' or 'graph'")
             plan = p.build_plan(
-                method=body.get("method") or "reference",
-                min_identity=float(body.get("min_identity", 0.80) or 0.80),
-                min_query_coverage=float(body.get("min_query_coverage", 0.30) or 0.30),
-                min_align_length=int(body.get("min_align_length", 500) or 500),
-                min_gap=int(body.get("min_gap", 100) or 100),
+                method=method,
+                min_identity=_num(body, "min_identity", 0.80, float, 0.0, 1.0),
+                min_query_coverage=_num(body, "min_query_coverage", 0.30, float, 0.0, 1.0),
+                min_align_length=_num(body, "min_align_length", 500, int, 0),
+                min_gap=_num(body, "min_gap", 100, int, 0),
                 fill_gaps_from_graph=bool(body.get("fill_gaps_from_graph", True)),
                 include_unplaced=bool(body.get("include_unplaced", True)),
                 break_misassemblies_first=bool(body.get("break_misassemblies_first", False)),
@@ -330,9 +405,15 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         data = body.get("plan", body)
         if not isinstance(data, dict) or "scaffolds" not in data:
             fail("body must be a scaffold plan with a 'scaffolds' list")
+        if not isinstance(data["scaffolds"], list):
+            fail("'scaffolds' must be a list")
         with _lock:
             p = proj()
-            p.set_plan(ScaffoldPlan.from_dict(data))
+            try:
+                plan = ScaffoldPlan.from_dict(data)
+            except (KeyError, TypeError, ValueError) as exc:
+                fail(f"malformed scaffold plan: {exc}")
+            p.set_plan(plan)
             return {"plan": p.plan.to_dict(), "preview": p.preview()}
 
     # ---------------------------------------------------------------- search
@@ -348,8 +429,8 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
             backend, hits = search_mod.search_graph(
                 g,
                 str(query),
-                min_identity=float(body.get("min_identity", 0.8) or 0.8),
-                min_length=int(body.get("min_length", 0) or 0),
+                min_identity=_num(body, "min_identity", 0.8, float, 0.0, 1.0),
+                min_length=_num(body, "min_length", 0, int, 0),
                 threads=app.state.threads,
             )
         return {"backend": backend, "hits": [h.to_dict() for h in hits]}
@@ -361,10 +442,17 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         body = body or {}
         outdir = str(body.get("outdir") or "plastr_out")
         what = body.get("what") or ["scaffolds", "agp", "gfa", "csv", "report"]
+        if not isinstance(what, list) or not all(isinstance(k, str) for k in what):
+            fail("'what' must be a list of artefact names")
         with _lock:
-            written = proj().export(
-                outdir, list(what), overwrite=bool(body.get("overwrite", False))
-            )
+            try:
+                written = proj().export(
+                    outdir, list(what), overwrite=bool(body.get("overwrite", False))
+                )
+            except PermissionError:
+                fail(f"permission denied writing to {outdir}", 403)
+            except OSError as exc:
+                fail(f"cannot write to {outdir}: {exc.strerror or exc}")
         return {"written": written}
 
     @app.get("/api/download/{kind}")
@@ -443,12 +531,14 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         target = Path(path).expanduser() if path else Path.cwd()
         try:
             target = target.resolve()
-        except OSError:
-            fail(f"cannot read {path}")
-        if target.is_file():
-            target = target.parent
-        if not target.is_dir():
-            fail(f"not a directory: {target}", 404)
+            if target.is_file():
+                target = target.parent
+            if not target.is_dir():
+                fail(f"not a directory: {target}", 404)
+        except PermissionError:
+            fail(f"permission denied: {target}", 403)
+        except OSError as exc:
+            fail(f"cannot read {path}: {exc.strerror or exc}")
 
         interesting = {
             ".gfa", ".gfa1", ".gfa2", ".fastg", ".fa", ".fasta", ".fna",
@@ -465,9 +555,14 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                 if not is_dir and child.suffix.lower() not in interesting:
                     continue
                 try:
-                    size = child.stat().st_size if not is_dir else 0
+                    st = child.stat()
                 except OSError:
-                    size = 0
+                    continue
+                # Never offer a FIFO or device: opening one blocks forever, and
+                # the file picker is the one place a user can pick blind.
+                if not is_dir and not stat.S_ISREG(st.st_mode):
+                    continue
+                size = st.st_size if not is_dir else 0
                 entries.append({"name": child.name, "is_dir": is_dir, "size": size})
         except PermissionError:
             fail(f"permission denied: {target}", 403)
