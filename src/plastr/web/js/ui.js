@@ -427,7 +427,7 @@ export function createApp() {
 
   function clearReferenceResults() {
     const box = $('ref-results');
-    if (box) box.innerHTML = '<p class="result-note">No reference loaded. Insert one to get genome fraction, misassemblies, NGA50, and reference-guided scaffolding.</p>';
+    if (box) box.innerHTML = '<p class="result-note">No reference loaded. Align one to get genome fraction, misassemblies, NGA50, and reference-guided scaffolding.</p>';
   }
 
   function renderReferenceResults(report) {
@@ -459,14 +459,13 @@ export function createApp() {
         `<div class="covbar">${bars}</div></div>`;
     }).join('');
 
+    // Two headline numbers and the coverage bars. The full statistics table
+    // lives in Assembly QC; printing all of it twice made the sidebar longer
+    // without telling anyone anything new.
     box.innerHTML =
       '<div class="results">' +
       stat('Genome fraction', `${fmtNum(report.genome_fraction, 2)}%`, gfTone) +
-      stat('Duplication ratio', fmtNum(report.duplication_ratio, 3)) +
-      stat('NGA50', report.nga50 ? fmtBp(report.nga50) : '—') +
       stat('Misassemblies', fmtInt(report.num_misassemblies), misTone) +
-      stat('Mismatches / 100 kb', fmtNum(report.mismatches_per_100kb, 1)) +
-      stat('Unaligned contigs', fmtInt(report.unaligned_contigs)) +
       (coverage ? `<h4>Reference coverage</h4>${coverage}` : '') +
       (report.misassemblies?.length
         ? `<h4>Misassemblies</h4><ul>${report.misassemblies.slice(0, 40).map((m) =>
@@ -1107,9 +1106,28 @@ export function createApp() {
       }
     });
 
-    // Collapsible sidebar sections
-    document.querySelectorAll('.panel > .panel-head').forEach((head) => {
-      head.addEventListener('click', () => head.parentElement.classList.toggle('collapsed'));
+    // Collapsible sidebar sections. Which ones are open is remembered, because
+    // the sidebar is taller than any screen and re-opening the same three
+    // panels on every launch is a chore.
+    const PANEL_KEY = 'plastr-panels';
+    let panelState = {};
+    try { panelState = JSON.parse(localStorage.getItem(PANEL_KEY) || '{}') || {}; } catch { panelState = {}; }
+    document.querySelectorAll('.panel').forEach((panel) => {
+      const head = panel.querySelector('.panel-head');
+      if (!head) return;
+      const id = panel.id || '';
+      if (Object.prototype.hasOwnProperty.call(panelState, id)) {
+        panel.classList.toggle('collapsed', !panelState[id]);
+      }
+      const button = head.querySelector('.panel-toggle');
+      const sync = () => {
+        const open = !panel.classList.contains('collapsed');
+        if (button) button.setAttribute('aria-expanded', String(open));
+        panelState[id] = open;
+        try { localStorage.setItem(PANEL_KEY, JSON.stringify(panelState)); } catch { /* private mode */ }
+      };
+      sync();
+      head.addEventListener('click', () => { panel.classList.toggle('collapsed'); sync(); });
     });
 
     window.addEventListener('resize', () => renderer.resize());

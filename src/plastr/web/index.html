@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plastr — assembly graph studio</title>
+<!-- The plaster, inline: the browser asks for /favicon.ico on every load, and
+     the static mount has none, so each load logged a 404 in the console. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg transform='rotate(-35 16 16)'%3E%3Crect x='2' y='11' width='28' height='10' rx='5' fill='%23e0a273'/%3E%3Crect x='11' y='13' width='10' height='6' rx='1' fill='%23fdf6ec'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -36,8 +39,17 @@
       <button id="btn-save-png" class="btn" title="Save the current view as PNG">PNG</button>
       <button id="btn-save-svg" class="btn" title="Save the current view as SVG">SVG</button>
       <div class="sep" role="separator"></div>
-      <button id="btn-theme" class="btn btn-icon" title="Toggle light / dark theme">◐</button>
-      <button id="btn-help" class="btn btn-icon" title="Keyboard shortcuts (?)">?</button>
+      <!-- Drawn rather than set as a character: the ◐ this used to be has no
+           consistent size across system fonts and rendered as a speck. -->
+      <button id="btn-theme" class="btn btn-icon" title="Toggle light / dark theme"
+              aria-label="Toggle light or dark theme">
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 1.75a6.25 6.25 0 0 0 0 12.5z" fill="currentColor"/>
+        </svg>
+      </button>
+      <button id="btn-help" class="btn btn-icon" title="Keyboard shortcuts (?)"
+              aria-label="Keyboard and mouse help">?</button>
     </div>
   </header>
 
@@ -123,7 +135,7 @@
 
     <!-- Reference -->
     <section class="panel" id="panel-reference">
-      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Insert reference</button></h2>
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Reference</button></h2>
       <div class="panel-body">
         <label class="field"><span class="field-label">Reference FASTA</span>
           <span class="field-row">
@@ -200,8 +212,8 @@
     </section>
 
     <!-- Operations -->
-    <section class="panel" id="panel-ops">
-      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Operations</button></h2>
+    <section class="panel collapsed" id="panel-ops">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="false"><span class="chev" aria-hidden="true"></span>Operations</button></h2>
       <div class="panel-body">
         <div class="btn-row">
           <button class="btn btn-danger-ghost" id="op-delete" title="Delete selected segments (Del)">Delete selection</button>
@@ -248,8 +260,8 @@
     </section>
 
     <!-- Search -->
-    <section class="panel" id="panel-search">
-      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Sequence search</button></h2>
+    <section class="panel collapsed" id="panel-search">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="false"><span class="chev" aria-hidden="true"></span>Sequence search</button></h2>
       <div class="panel-body">
         <label class="field"><span class="field-label">Query sequence or FASTA path</span>
           <textarea id="search-query" rows="3" spellcheck="false" placeholder="ACGTACGT…  or  /path/to/query.fasta"></textarea>
@@ -269,8 +281,8 @@
     </section>
 
     <!-- Export -->
-    <section class="panel" id="panel-export">
-      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Export</button></h2>
+    <section class="panel collapsed" id="panel-export">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="false"><span class="chev" aria-hidden="true"></span>Export</button></h2>
       <div class="panel-body">
         <label class="field"><span class="field-label">Output directory</span>
           <span class="field-row">

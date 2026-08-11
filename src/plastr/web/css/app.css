@@ -189,6 +189,8 @@ body {
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .btn-sm { padding: 4px 8px; font-size: 11.5px; }
 .btn-icon { padding: 5px 8px; font-size: 13px; line-height: 1; }
+/* Inline icons match the cap height of the button text beside them. */
+.ico { width: 13px; height: 13px; display: block; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.12); background: var(--accent); border-color: var(--accent); }
 .btn-danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
@@ -231,7 +233,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); margin: 0
 .check { display: flex; align-items: center; font-size: 12px; color: var(--text); margin: 4px 0; cursor: pointer; }
 .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 6px 0; }
 .inline-select { margin-top: 4px; }
-output { font-family: var(--mono); color: var(--text); font-size: 11px; }
+output { font-family: var(--mono); color: var(--text); font-size: 11px;
+  font-variant-numeric: tabular-nums; }
 .badge {
   display: inline-block; min-width: 16px; text-align: center;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -292,13 +295,16 @@ details.sub > *:first-of-type:not(summary) { margin-top: 8px; }
 .results table { width: 100%; border-collapse: collapse; margin: 6px 0; }
 .results th, .results td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border-soft); }
 .results th { color: var(--text-dim); font-weight: 500; width: 55%; }
-.results td { font-family: var(--mono); font-size: 11px; text-align: right; }
+/* Figures are read down a column, so the digits have to share a width or the
+   decimal points wander and two numbers of the same size look different. */
+.results td { font-family: var(--mono); font-size: 11px; text-align: right;
+  font-variant-numeric: tabular-nums; }
 .results h4 {
   margin: 10px 0 4px; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase;
   color: var(--text-dim); border-bottom: 1px solid var(--border-soft); padding-bottom: 3px;
 }
 .results .kv { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
-.results .kv b { font-family: var(--mono); font-weight: 500; }
+.results .kv b { font-family: var(--mono); font-weight: 500; font-variant-numeric: tabular-nums; }
 .results ul { margin: 4px 0; padding-left: 16px; }
 .results code { font-family: var(--mono); font-size: 10.5px; }
 .result-note { color: var(--text-dim); padding: 4px 0; }
@@ -405,7 +411,8 @@ details.sub > *:first-of-type:not(summary) { margin-top: 8px; }
 .status-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
 .status-msg.error { color: var(--bad); }
 .status-chip { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim);
-  padding: 1px 6px; border-left: 1px solid var(--border); }
+  padding: 1px 6px; border-left: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; }
 .status-chip:empty { display: none; }
 .busy { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 11px; }
 .busy[hidden] { display: none; }

@@ -35,6 +35,55 @@ BANNER = r"""
 # ---------------------------------------------------------------------------
 
 
+def _colour_enabled() -> bool:
+    """Colour only when a person is actually looking at a terminal.
+
+    Honours NO_COLOR (https://no-color.org) and FORCE_COLOR, and stays off when
+    stdout is a pipe so redirected output stays clean for grep and for logs.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+_COLOUR = None
+
+
+def _c(text: str, code: str) -> str:
+    global _COLOUR
+    if _COLOUR is None:
+        _COLOUR = _colour_enabled()
+    return f"\033[{code}m{text}\033[0m" if _COLOUR else text
+
+
+def _dim(text: str) -> str:
+    return _c(text, "2")
+
+
+def _bold(text: str) -> str:
+    return _c(text, "1")
+
+
+def _good(text: str) -> str:
+    return _c(text, "32")
+
+
+def _warn(text: str) -> str:
+    return _c(text, "33")
+
+
+def _bad(text: str) -> str:
+    return _c(text, "31")
+
+
+def _plural(n: int, singular: str, plural: str | None = None) -> str:
+    return singular if n == 1 else (plural or singular + "s")
+
+
 def _human(n: float | int | None) -> str:
     if n is None:
         return "-"
@@ -71,43 +120,54 @@ def _print_metrics(project: Project) -> None:
         ("dead ends", f"{m.dead_ends:,}"),
         ("circular contigs", f"{m.num_circular:,}"),
     ]
-    print("\n  Assembly statistics")
-    print("  " + "-" * 40)
+    print("\n  " + _bold("Assembly statistics"))
+    print(_dim("  " + "-" * 40))
     for label, value in rows:
-        print(f"  {label:<22}{value:>18}")
+        print(f"  {_dim(label.ljust(22))}{value:>18}")
 
 
 def _print_reference(project: Project) -> None:
     r = project.reference_report
     if r is None:
         return
-    print("\n  Reference-based statistics")
-    print("  " + "-" * 40)
+    print("\n  " + _bold("Reference-based statistics"))
+    print(_dim("  " + "-" * 40))
+    def gf_tone(text: str) -> str:
+        if r.genome_fraction >= 90:
+            return _good(text)
+        return _warn(text) if r.genome_fraction >= 70 else _bad(text)
+
+    def mis_tone(text: str) -> str:
+        return _good(text) if r.num_misassemblies == 0 else _bad(text)
+
+    # (label, value, tone). Colour is applied after padding, because an ANSI
+    # escape is characters too and would push every column out of line.
     rows = [
-        ("genome fraction", f"{r.genome_fraction:.2f} %"),
-        ("duplication ratio", f"{r.duplication_ratio:.3f}"),
-        ("largest alignment", _human(r.largest_alignment)),
-        ("NA50", _human(r.na50)),
-        ("NGA50", _human(r.nga50) if r.nga50 else "-"),
-        ("mismatches / 100 kb", f"{r.mismatches_per_100kb:.2f}"),
-        ("indels / 100 kb", f"{r.indels_per_100kb:.2f}"),
-        ("misassemblies", f"{r.num_misassemblies:,}"),
-        ("  relocations", f"{r.num_relocations:,}"),
-        ("  inversions", f"{r.num_inversions:,}"),
-        ("  translocations", f"{r.num_translocations:,}"),
-        ("local misassemblies", f"{r.num_local_misassemblies:,}"),
-        ("unaligned contigs", f"{r.unaligned_contigs:,}"),
+        ("genome fraction", f"{r.genome_fraction:.2f} %", gf_tone),
+        ("duplication ratio", f"{r.duplication_ratio:.3f}", None),
+        ("largest alignment", _human(r.largest_alignment), None),
+        ("NA50", _human(r.na50), None),
+        ("NGA50", _human(r.nga50) if r.nga50 else "-", None),
+        ("mismatches / 100 kb", f"{r.mismatches_per_100kb:.2f}", None),
+        ("indels / 100 kb", f"{r.indels_per_100kb:.2f}", None),
+        ("misassemblies", f"{r.num_misassemblies:,}", mis_tone),
+        ("  relocations", f"{r.num_relocations:,}", None),
+        ("  inversions", f"{r.num_inversions:,}", None),
+        ("  translocations", f"{r.num_translocations:,}", None),
+        ("local misassemblies", f"{r.num_local_misassemblies:,}", None),
+        ("unaligned contigs", f"{r.unaligned_contigs:,}", None),
     ]
-    for label, value in rows:
-        print(f"  {label:<22}{value:>18}")
+    for label, value, tone in rows:
+        cell = value.rjust(18)
+        print(f"  {_dim(label.ljust(22))}{tone(cell) if tone else cell}")
     if r.misassemblies:
-        print("\n  Misassembly detail")
-        print("  " + "-" * 40)
+        print("\n  " + _bold("Misassembly detail"))
+        print(_dim("  " + "-" * 40))
         for event in r.misassemblies[:25]:
-            flag = "!" if event.is_extensive else " "
-            print(f"  {flag} {event.contig:<24} {event.kind:<14} {event.description}")
+            flag = _bad("!") if event.is_extensive else " "
+            print(f"  {flag} {event.contig:<24} {event.kind:<14} {_dim(event.description)}")
         if len(r.misassemblies) > 25:
-            print(f"    ... and {len(r.misassemblies) - 25} more")
+            print(_dim(f"    ... and {len(r.misassemblies) - 25} more"))
 
 
 def _load(args) -> Project:
@@ -301,16 +361,24 @@ def cmd_scaffold(args) -> int:
         print(f"  {note}")
 
     preview = project.preview()
-    print("\n  Scaffolds")
-    print("  " + "-" * 40)
-    print(f"  {'scaffolds':<22}{preview['scaffold_count']:>18,}")
-    print(f"  {'total length':<22}{_human(preview['total_length']):>18}")
-    print(f"  {'largest':<22}{_human(preview['largest']):>18}")
-    print(f"  {'N50':<22}{_human(preview['n50']):>18}")
-    print(f"  {'gap bases (N)':<22}{_human(preview['gap_bases']):>18}")
-    print(f"  {'bases from graph':<22}{_human(preview['bridged_bases']):>18}")
+    carried = preview["scaffold_count"] - plan.scaffold_count
+    print("\n  " + _bold("Scaffolds"))
+    print(_dim("  " + "-" * 40))
+    rows = [
+        ("scaffolds", f"{plan.scaffold_count:,}"),
+        ("  contigs joined", f"{plan.placed_count:,}"),
+        ("unplaced, kept as is", f"{carried:,}"),
+        ("records written", f"{preview['scaffold_count']:,}"),
+        ("total length", _human(preview["total_length"])),
+        ("largest", _human(preview["largest"])),
+        ("N50", _human(preview["n50"])),
+        ("gap bases (N)", _human(preview["gap_bases"])),
+        ("bases from graph", _human(preview["bridged_bases"])),
+    ]
+    for label, value in rows:
+        print(f"  {_dim(label.ljust(22))}{value:>18}")
     for warning in preview["warnings"]:
-        print(f"  ! {warning}", file=sys.stderr)
+        print(f"  {_warn('!')} {warning}", file=sys.stderr)
 
     written = project.export(args.outdir, args.export, overwrite=args.overwrite)
     print(f"\n  written to {os.path.abspath(args.outdir)}/")
@@ -508,13 +576,14 @@ def cmd_info(args) -> int:
     _print_metrics(project)
     graph = project.require_graph()
     components = graph.connected_components()
-    print("\n  Largest components")
-    print("  " + "-" * 40)
+    print("\n  " + _bold("Largest components"))
+    print(_dim("  " + "-" * 40))
     for i, comp in enumerate(components[:10]):
         total = sum(graph.segments[n].length for n in comp)
-        print(f"  {i:>3}  {len(comp):>6,} segments  {_human(total):>14}")
+        label = f"{len(comp):,} {_plural(len(comp), 'segment')}"
+        print(f"  {_dim(f'{i:>3}')}  {label:<18}{_human(total):>14}")
     if len(components) > 10:
-        print(f"       ... and {len(components) - 10:,} more")
+        print(_dim(f"       ... and {len(components) - 10:,} more"))
     print()
     return 0
 
