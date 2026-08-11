@@ -2,7 +2,15 @@
 
 All endpoints are under `/api`. Request and response bodies are JSON unless
 stated. Errors return `{"error": "...", "detail": "..."}` with a 4xx/5xx status;
-the UI shows `error` verbatim.
+the UI shows `error` verbatim. That includes request-validation failures and
+404s, which FastAPI and Starlette would otherwise answer in their own shapes.
+
+Numeric fields are read with an explicit presence check, so an explicit `0`
+means zero rather than "use the default", and values outside their documented
+range are refused rather than silently clamped.
+
+A `gaps` entry on a path lists the step indices after which the join is a
+scaffold gap (SPAdes' `;`) rather than an edge in the graph.
 
 The server holds exactly one project in memory.
 
@@ -77,7 +85,7 @@ Query params: `min_length` (int, default 0), `max_nodes` (int, default 15000),
                    "r_len": 160000, "block_len": 19000}]}
   ],
   "links": [{"from": "a", "from_orient": "+", "to": "b", "to_orient": "+", "overlap": 0}],
-  "paths": [{"name": "contig_1", "steps": ["1+", "2+", "4+"]}],
+  "paths": [{"name": "contig_1", "steps": ["1+", "2+", "4+"], "gaps": [1]}],
   "truncated": false,
   "shown": 10,
   "total": 10,
@@ -108,7 +116,8 @@ Body:
 {"path": "reference.fasta", "preset": "asm10", "min_identity": 0.0,
  "min_length": 200, "threads": 8}
 ```
-`preset` ∈ `asm5` | `asm10` | `asm20`. Runs alignment (may take seconds), then
+`preset` ∈ `asm5` | `asm10` | `asm20`; anything else is a 400. `min_identity`
+is a fraction in 0–1, not a percentage. Runs alignment (may take seconds), then
 returns `{"status": "...", "report": <reference report>, "metrics": <metrics>}`.
 
 ## `DELETE /api/reference`
@@ -133,6 +142,8 @@ Drops the reference and its alignments.
       "unaligned_contigs": 1, "misassembled_contigs": ["ctg_x"],
       "per_reference_coverage": {"chromosome": 84.1},
       "coverage_blocks": {"chromosome": [[0, 19000], ...]},
+      "reference_sizes": {"chromosome": 22580},
+      "reference_length": 22580, "reference_sequences": 1,
       "misassemblies": [{"contig": "ctg_x", "kind": "inversion",
                          "is_extensive": true, "contig_pos": 8000,
                          "description": "..."}]
@@ -174,6 +185,7 @@ Body:
 Plan shape:
 ```json
 {"method": "reference", "scaffold_count": 3, "placed_count": 10,
+ "record_count": 14,
  "unplaced": ["ctg_foreign"], "redundant": [], "notes": ["..."],
  "scaffolds": [
    {"name": "scaffold_chromosome", "source": "reference", "reference": "chromosome",
@@ -181,10 +193,20 @@ Plan shape:
                  "gap_evidence": "reference", "bridge_path": ["r+"],
                  "bridge_sequence_length": 2400, "ref": "chromosome",
                  "ref_start": 0, "ref_end": 19000, "identity": 0.9989,
-                 "overlaps_previous": false}]}
+                 "overlaps_previous": false, "trim_next": 0}]}
  ]}
 ```
 `gap_evidence` ∈ `reference` | `graph` | `adjacent` | `manual` | `default`.
+
+`scaffold_count` and `placed_count` count only scaffolds that join something:
+with `include_unplaced` (the default) every unplaced contig is also carried
+through as its own single-member scaffold, and counting those as placed made
+the two numbers contradict each other. `record_count` is how many records the
+export will write, i.e. scaffolds plus pass-throughs.
+
+`trim_next` is how many bases the following member gives up because they are
+shared with this one — set only where the two contig ends were checked to match
+base for base.
 
 ## `GET /api/scaffold` — current plan or `null`.
 ## `PUT /api/scaffold` — body is a plan (same shape); replaces it after manual edits.
@@ -208,8 +230,14 @@ Returns `{"backend": "blast"|"minimap2", "hits": [{"segment": "ctg_1",
 ---
 
 ## `POST /api/export`
-Body: `{"outdir": "plastr_out", "what": ["scaffolds","agp","gfa","csv","report","session"]}`
+Body: `{"outdir": "plastr_out", "what": ["scaffolds","agp","gfa","csv","report","session"],
+"overwrite": false}`
 Returns `{"written": [{"kind": "scaffolds", "path": "...", "bytes": 1234}]}`.
+
+`overwrite` defaults to `false`: an export that would replace an existing file
+fails with 400 rather than destroying it. `scaffolds` and `agp` are skipped
+when no plan has been built, so compare `what` against the `kind`s in `written`
+rather than assuming everything asked for was produced.
 
 ## `GET /api/download/{kind}`
 Streams a single artefact directly (`scaffolds`, `agp`, `gfa`, `csv`, `report`,

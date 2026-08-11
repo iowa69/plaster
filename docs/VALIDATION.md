@@ -167,37 +167,47 @@ the genome is covered, how contiguous the assembly is — is identical.
 ## Scaffolding, judged by QUAST
 
 The headline feature evaluated by an independent tool. Plastr scaffolded the
-*K. pneumoniae* graph against its reference, and QUAST then scored the contigs
-and the resulting scaffolds side by side.
+*K. pneumoniae* graph `ERR11578647` against its closed reference, and QUAST then
+scored the input contigs and the resulting scaffolds side by side.
 
 ```bash
-plastr scaffold assembly_graph.gfa -r reference.fasta --preset asm5 -o out/
-quast.py -o quast_out -r reference.fasta segments.fasta out/scaffolds.fasta
+S=KP_groundtruth_V2/strains/ERR11578647
+plastr scaffold $S/assembly_graph.gfa -r $S/reference.fasta --preset asm5 -o out/
+quast.py -o quast_out -r $S/reference.fasta --min-contig 500 \
+         $S/segments.fasta out/scaffolds.fasta
 ```
 
 | | contigs | scaffolds |
 |---|---|---|
-| # contigs | 63 | **5** |
-| Total length | 5,434,937 | 5,504,709 |
-| Largest contig | 812,461 | **5,255,698** |
-| N50 | 444,072 | **5,255,698** |
-| NGA50 | 444,072 | **5,238,277** |
-| Genome fraction (%) | 98.571 | **99.565** |
+| # contigs (≥ 500 bp) | 80 | **5** |
+| # contigs (≥ 1 kb) | 70 | **4** |
+| Largest contig | 805,802 | **5,280,994** |
+| N50 | 268,130 | **5,279,724** |
+| NGA50 | 268,130 | **5,233,772** |
+| Largest alignment | 805,802 | **5,233,772** |
+| Genome fraction (%) | 98.730 | **99.157** |
 | Duplication ratio | 1.001 | **1.000** |
 | **# misassemblies** | 0 | **0** |
-| # local misassemblies | 0 | 1 |
-| mismatches / 100 kb | 0.28 | 2.04 |
-| indels / 100 kb | 0.00 | 0.62 |
+| # local misassemblies | 0 | **0** |
+| # scaffold gap local mis. | 0 | 18 |
+| mismatches / 100 kb | 0.16 | 1.00 |
+| indels / 100 kb | 0.04 | 0.16 |
+| N per 100 kb | 0.00 | 835 |
 
-N50 improved 11.8-fold and the chromosome was reconstructed as a single
-5.26 Mb scaffold, **with no misassemblies introduced** and duplication ratio
-at 1.000. Genome fraction *rose* by one percentage point, because 48 gaps were
-closed with 58 kb of real sequence recovered from the graph rather than filled
-with Ns.
+N50 improved 19.7-fold and the chromosome was reconstructed as a single
+5.28 Mb scaffold, **with no misassemblies introduced** and duplication ratio
+at 1.000. Genome fraction *rose* by 0.43 percentage points, because 46 gaps
+were closed with 27 kb of real sequence recovered from the graph rather than
+filled with Ns.
+
+The 18 scaffold-gap local misassemblies are gap-size estimation error: the
+distance between two reference placements is not the true gap, so QUAST sees
+each closed gap as slightly the wrong length. They were 26 before overlapping
+placements stopped being written twice with a run of Ns between them.
 
 The residual mismatch and indel rate is the assembler's own error rate in
-sequence that had not previously been aligned to anything: 2.04 mismatches per
-100 kb is 99.998% identity.
+sequence that had not previously been aligned to anything: 1.00 mismatches per
+100 kb is 99.999% identity.
 
 ### The bug this table used to hide
 
@@ -218,21 +228,44 @@ member, and it fails loudly if the trim is removed.
 
 ### The AGP contract on real data
 
-Every AGP row was checked against the scaffold FASTA it describes: 125 component
-rows sliced out exactly the oriented contig sequence, 10 gap rows were exactly
-the declared number of Ns, 31 graph-bridge rows carried their recovered
-sequence, coordinates tiled each scaffold with no gap or overlap, and every
-scaffold's length equalled its AGP extent. This held with 127 bp overlaps in
-play, where the bridging sequence must be overlap-trimmed to be correct.
+Every AGP row of all 27 scaffolded genomes was checked against the FASTA it
+describes, by a checker written independently of the writer: **17,199 component
+rows and 1,477 gap rows**. Every component row names a segment that exists in
+the exported graph, every one slices out exactly the sub-range it declares —
+reverse-complemented where the orientation column says so — every gap row is
+exactly the declared number of Ns, the coordinates tile each scaffold with no
+gap or overlap, and every scaffold's length equals its AGP extent. This holds
+with 127 bp link overlaps in play, where the bridging sequence must be
+overlap-trimmed to be correct.
+
+Zero of those 17,199 rows is unresolvable. That is worth stating because until
+recently it was not true: a gap closed from the graph was written as a single
+row whose component id was synthesised from the walk — `segment_0146-` for one
+step, `a+b-` for two — naming something no FASTA contains, with coordinates
+that were not coordinates in it and an orientation of `+` however the walk ran.
+A strict consumer rejected the file; a lenient one that stripped the suffix
+rebuilt the wrong strand from the wrong offset. Bridges are now written as one
+row per segment of the walk.
 
 ---
 
 ## Robustness across real files
 
-Every assembly graph on the development machine -- 251 files spanning SPAdes
-GFA and FASTG, Unicycler intermediate and final graphs, and the author's own
-assembler, at every *k* from 27 to 127 -- loads without error, in 2.2 s in
-total.
+There are 7,273 assembly graphs on the development machine. A random 600 of
+them -- SPAdes GFA and FASTG, Unicycler intermediate and final graphs, and the
+author's own assembler, at every *k* from 27 to 127 -- were loaded and checked
+against invariants that must hold for any graph: every link endpoint exists,
+each segment's declared length equals the sequence it holds, the connected
+components partition the segments exactly once, the metrics agree with the
+segments they were computed from, and N50 never exceeds the longest contig.
+Each file was then written back out as GFA and re-read, and the segments, links,
+lengths and sequences compared.
+
+**600 files, 165 s, zero crashes and zero invariant violations.**
+
+The whole CLI surface is exercised the same way: `info`, `qc`, `qc -r`,
+`scaffold -r --break-misassemblies`, `compare`, `search` and `export` across
+all 27 paired genomes -- 189 commands, no failures.
 
 ### A third bug this found
 
