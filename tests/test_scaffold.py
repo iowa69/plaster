@@ -955,3 +955,23 @@ class TestOverlappingPlacementsAreTrimmedNotDoubled:
         assert _verified_overlap(demo_graph, (name, "+"), (name, "+"), 40) == 0
         # Below the minimum, never trim.
         assert _verified_overlap(demo_graph, (name, "+"), (name, "+"), 5) == 0
+
+    def test_graph_bridging_gets_first_refusal_over_trimming(self, demo_graph, demo_plan):
+        """A gap the graph can fill with real sequence must not be spent on a trim.
+
+        Trimming used to be decided while the plan was built, before
+        apply_graph_bridges ran, so it took gaps the graph would have filled --
+        four bridges were lost on a real strain and the builder then reported
+        the remaining walks as unconnected.
+        """
+        from plastr.core.scaffold.reference_guided import apply_overlap_trims
+
+        bridged = [m for s in demo_plan.scaffolds for m in s.members if m.bridge_path]
+        # Trimming again must be a no-op and must never touch a bridged member.
+        apply_overlap_trims(demo_graph, demo_plan)
+        for member in bridged:
+            assert member.bridge_path, "a bridge was replaced by a trim"
+            assert member.trim_next == 0
+
+    def test_no_bridge_is_reported_as_unconnected_on_the_demo(self, demo_built):
+        assert not [w for w in demo_built.warnings if "does not connect" in w]

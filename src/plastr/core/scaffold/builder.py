@@ -114,7 +114,11 @@ def build_scaffolds(
 
             # Either real bridging sequence from the graph, or a run of Ns.
             joined_by_graph = False
-            if member.bridge_path or member.gap_after == 0:
+            # A trim join is not a graph walk, so do not ask the graph to
+            # confirm one: it cannot, and the failure would be reported as if
+            # a bridge had been lost.
+            trim_join = bool(member.trim_next) and not member.bridge_path
+            if not trim_join and (member.bridge_path or member.gap_after == 0):
                 bridge, valid = _bridge_sequence_for(
                     graph, members, index, member, out.warnings
                 )

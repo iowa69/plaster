@@ -116,22 +116,6 @@ def scaffold_by_reference(
                     pending_overlap = True
                     member.gap_after = min_gap
                     member.gap_evidence = GAP_DEFAULT
-                    # Writing both contigs whole and then a run of Ns emits the
-                    # shared bases twice and invents a gap where the reference
-                    # says the two placements touch -- a false tandem repeat at
-                    # every such junction. Trim instead, but only when the ends
-                    # really do match; a reference-estimated overlap is not
-                    # evidence enough to delete sequence.
-                    shared = _verified_overlap(
-                        graph,
-                        (member.segment, member.orientation),
-                        (nxt.query, "+" if nxt.strand > 0 else "-"),
-                        -raw_gap,
-                    )
-                    if shared:
-                        member.trim_next = shared
-                        member.gap_after = 0
-                        member.gap_evidence = GAP_ADJACENT
                 else:
                     pending_overlap = False
                     member.gap_after = max(raw_gap, min_gap)
@@ -164,6 +148,8 @@ def scaffold_by_reference(
             )
     plan.unplaced = unplaced
 
+    # Graph bridging gets first refusal on every gap: real sequence beats a
+    # trim. Only what it leaves behind is considered for overlap trimming.
     if fill_gaps_from_graph and graph.link_count:
         filled = apply_graph_bridges(graph, plan, max_bridge_length=max_bridge_length)
         if filled:
@@ -199,6 +185,13 @@ def scaffold_by_reference(
                     f"{dropped} contig(s) already written inside a graph bridge are "
                     "not repeated as separate records"
                 )
+
+    trimmed = apply_overlap_trims(graph, plan)
+    if trimmed:
+        plan.notes.append(
+            f"{trimmed} overlapping placement(s) written once instead of twice "
+            "with a gap between"
+        )
 
     carried = len(plan.scaffolds) - plan.scaffold_count
     note = (
@@ -246,6 +239,42 @@ def apply_graph_bridges(
 
 def _safe(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+
+
+def apply_overlap_trims(graph: AssemblyGraph, plan: ScaffoldPlan) -> int:
+    """Write reference-overlapping placements once instead of twice plus a gap.
+
+    Runs *after* graph bridging, so a gap the graph could fill with real
+    sequence is never spent on a trim. Only pairs the graph did not join and
+    whose contig ends actually match are trimmed.
+    """
+    trimmed = 0
+    for scaffold in plan.scaffolds:
+        for i in range(len(scaffold.members) - 1):
+            member, nxt = scaffold.members[i], scaffold.members[i + 1]
+            if member.bridge_path or member.gap_after <= 0:
+                continue
+            if not nxt.overlaps_previous:
+                continue
+            if member.ref is None or nxt.ref is None or member.ref != nxt.ref:
+                continue
+            if member.ref_end is None or nxt.ref_start is None:
+                continue
+            estimate = member.ref_end - nxt.ref_start
+            if estimate <= 0:
+                continue
+            shared = _verified_overlap(
+                graph,
+                (member.segment, member.orientation),
+                (nxt.segment, nxt.orientation),
+                estimate,
+            )
+            if shared:
+                member.trim_next = shared
+                member.gap_after = 0
+                member.gap_evidence = GAP_ADJACENT
+                trimmed += 1
+    return trimmed
 
 
 def _verified_overlap(
