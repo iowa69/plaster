@@ -167,6 +167,13 @@ def build_scaffolds(
                 # The walk was broken, so fall through and leave an honest gap
                 # rather than butting the two contigs together.
 
+            if member.trim_next and not member.gap_after:
+                # Overlapping reference placements whose ends were checked to
+                # match base for base: the shared run is written once and the
+                # next member gives it up. No gap row belongs here.
+                lead_trim = int(member.trim_next)
+                continue
+
             # AGP has no way to express a zero-length gap.
             gap = max(int(member.gap_after), min_gap, 1)
             pieces.append("N" * gap)

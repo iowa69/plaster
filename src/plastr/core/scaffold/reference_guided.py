@@ -116,6 +116,22 @@ def scaffold_by_reference(
                     pending_overlap = True
                     member.gap_after = min_gap
                     member.gap_evidence = GAP_DEFAULT
+                    # Writing both contigs whole and then a run of Ns emits the
+                    # shared bases twice and invents a gap where the reference
+                    # says the two placements touch -- a false tandem repeat at
+                    # every such junction. Trim instead, but only when the ends
+                    # really do match; a reference-estimated overlap is not
+                    # evidence enough to delete sequence.
+                    shared = _verified_overlap(
+                        graph,
+                        (member.segment, member.orientation),
+                        (nxt.query, "+" if nxt.strand > 0 else "-"),
+                        -raw_gap,
+                    )
+                    if shared:
+                        member.trim_next = shared
+                        member.gap_after = 0
+                        member.gap_evidence = GAP_ADJACENT
                 else:
                     pending_overlap = False
                     member.gap_after = max(raw_gap, min_gap)
@@ -230,6 +246,39 @@ def apply_graph_bridges(
 
 def _safe(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+
+
+def _verified_overlap(
+    graph: AssemblyGraph,
+    left: tuple[str, str],
+    right: tuple[str, str],
+    estimate: int,
+    slack: int = 30,
+    minimum: int = 20,
+) -> int:
+    """Longest real suffix/prefix match between two oriented contig ends.
+
+    The reference says these two placements overlap by roughly ``estimate``
+    bases. That is an estimate from coordinates, not a sequence alignment, so
+    before deleting anything the bases have to agree exactly. Returns 0 when
+    they do not, which leaves an honest gap.
+    """
+    if estimate < minimum:
+        return 0
+    a = graph.segments.get(left[0])
+    b = graph.segments.get(right[0])
+    if a is None or b is None or a.sequence is None or b.sequence is None:
+        return 0
+    tail = a.seq_oriented(left[1])
+    head = b.seq_oriented(right[1])
+    hi = min(estimate + slack, len(tail), len(head))
+    lo = max(minimum, estimate - slack)
+    # Prefer the longest match, so a repeat boundary is cut in the same place a
+    # merge would cut it.
+    for size in range(hi, lo - 1, -1):
+        if tail[-size:] == head[:size]:
+            return size
+    return 0
 
 
 def _unique(name: str, used: set[str]) -> str:

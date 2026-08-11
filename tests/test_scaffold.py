@@ -884,3 +884,74 @@ class TestScaffoldNamesAreUnique:
         assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1"
         assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1_2"
         assert _unique("scaffold_plasmid_1", used) == "scaffold_plasmid_1_3"
+
+
+class TestOverlappingPlacementsAreTrimmedNotDoubled:
+    """Reference placements that overlap used to write the shared bases twice.
+
+    Both contigs went in whole and a min_gap run of Ns was inserted between
+    them, so the scaffold carried a tandem repeat that is not in the genome,
+    split by a gap. QUAST counted one scaffold-gap local misassembly per
+    junction.
+    """
+
+    def test_a_verified_overlap_is_written_once(self):
+        shared = "ACGTACGTACGTACGTACGTACGTACGT"          # 28 bp
+        left = "TTTTTTTTTTGGGGGGGGGG" + shared
+        right = shared + "CCCCCCCCCCAAAAAAAAAA"
+        g = AssemblyGraph()
+        g.add_segment(Segment(name="L", sequence=left, length=len(left)))
+        g.add_segment(Segment(name="R", sequence=right, length=len(right)))
+
+        plan = ScaffoldPlan(method="reference")
+        plan.scaffolds.append(
+            Scaffold(
+                name="s1",
+                source="reference",
+                members=[
+                    ScaffoldMember(segment="L", orientation="+",
+                                   trim_next=len(shared), gap_after=0,
+                                   gap_evidence=GAP_ADJACENT),
+                    ScaffoldMember(segment="R", orientation="+"),
+                ],
+            )
+        )
+        built = build_scaffolds(g, plan)
+        sequence = dict(built.records)["s1"]
+
+        assert "N" not in sequence
+        assert sequence == left + right[len(shared):]
+        assert sequence.count(shared) == 1, "the shared run must appear once"
+        assert built.gap_bases == 0 and built.num_gaps == 0
+
+    def test_an_unverified_overlap_still_leaves_an_honest_gap(self):
+        g = AssemblyGraph()
+        g.add_segment(Segment(name="L", sequence="A" * 60, length=60))
+        g.add_segment(Segment(name="R", sequence="C" * 60, length=60))
+        plan = ScaffoldPlan(method="reference")
+        plan.scaffolds.append(
+            Scaffold(
+                name="s1",
+                source="reference",
+                members=[
+                    # trim_next left at 0: the ends did not match, so nothing
+                    # may be deleted.
+                    ScaffoldMember(segment="L", orientation="+", gap_after=100),
+                    ScaffoldMember(segment="R", orientation="+"),
+                ],
+            )
+        )
+        built = build_scaffolds(g, plan)
+        sequence = dict(built.records)["s1"]
+        assert sequence == "A" * 60 + "N" * 100 + "C" * 60
+        assert built.num_gaps == 1
+
+    def test_the_overlap_is_only_trusted_when_the_bases_agree(self, demo_graph):
+        from plastr.core.scaffold.reference_guided import _verified_overlap
+
+        # Same segment against itself: a 40 bp suffix cannot equal its prefix
+        # in the demo's random sequence, so nothing is trimmed.
+        name = next(iter(demo_graph.segments))
+        assert _verified_overlap(demo_graph, (name, "+"), (name, "+"), 40) == 0
+        # Below the minimum, never trim.
+        assert _verified_overlap(demo_graph, (name, "+"), (name, "+"), 5) == 0

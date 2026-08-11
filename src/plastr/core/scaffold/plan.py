@@ -39,6 +39,11 @@ class ScaffoldMember:
     #: leaving a gap; useful to surface in the UI because it usually means a
     #: collapsed repeat.
     overlaps_previous: bool = False
+    #: Bases the *next* member shares with this one and must give up, so the
+    #: overlap is written once. Only set when the two contig ends actually
+    #: match, base for base -- a reference-estimated overlap is not evidence
+    #: enough to delete sequence.
+    trim_next: int = 0
 
     def to_dict(self) -> dict:
         d = asdict(self)

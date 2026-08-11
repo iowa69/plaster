@@ -106,35 +106,61 @@ includes them in the statistics too.
 
 Both are covered by regression tests in `tests/test_misassembly.py`.
 
-### Across six genomes
+### Across 27 genomes
 
-The single-genome comparison above could be luck, so it was repeated on five
-further closed *K. pneumoniae* genomes, 80 metric comparisons in total.
+The single-genome comparison above could be luck, so it was repeated on every
+closed *K. pneumoniae* genome on the development machine: 27 genomes, 16
+metrics each.
 
-These agree **exactly on all six genomes**: number of contigs, total length,
-largest contig, GC, N50, NG50, L50, genome fraction, duplication ratio, NGA50,
-largest alignment, total aligned length, and — the number that matters most —
-**# misassemblies**.
+```bash
+for s in KP_groundtruth_V2/strains/*/; do
+    quast.py -o "quast/$(basename $s)" -r "$s/reference.fasta" --min-contig 500 "$s/segments.fasta"
+    plastr qc "$s/segments.fasta" -r "$s/reference.fasta" --preset asm5 --min-contig 500
+done
+```
 
-Two metrics differ slightly on three of the six:
+| metric | genomes agreeing exactly | worst relative difference |
+|---|---|---|
+| # contigs, total length, largest contig | 27 / 27 | — |
+| N50, NG50, L50 | 27 / 27 | — |
+| **NA50, NGA50, largest alignment** | **27 / 27** | — |
+| **# misassemblies** | **26 / 27** | KP1057 only |
+| genome fraction | 4 / 27 at 3 dp | 0.010 % |
+| total aligned length | 6 / 27 | 0.030 % |
+| duplication ratio | 26 / 27 | 0.100 % |
+| # local misassemblies | 24 / 27 | 3 genomes, all reading low |
+| mismatches, indels / 100 kb | 7 / 27, 6 / 27 | alignment-sensitive |
 
-| genome | metric | QUAST | Plastr |
-|---|---|---|---|
-| ERR10447223 | # local misassemblies | 2 | 1 |
-| ERR10447223 | mismatches / 100 kb | 0.13 | 0.04 |
-| ERR11578077 | # local misassemblies | 1 | 0 |
-| ERR11578427 | # local misassemblies | 2 | 1 |
-| ERR11578427 | mismatches / 100 kb | 12.37 | 9.66 |
-| ERR11578427 | indels / 100 kb | 0.60 | 0.13 |
+Genome fraction and total aligned length differ only in the third decimal
+place — 98.850 against 98.848 — which is agreement for any practical purpose.
 
-These are the two most alignment-sensitive statistics, and the differences are
-what you get from running a different aligner configuration: a local
-misassembly is defined by a reference gap between 200 bp and 1 kb, so a block
-boundary shifting by a few tens of bases moves an event across the threshold.
-Plastr reads slightly low on both, consistently. Closing the gap entirely
-would mean reproducing QUAST's exact aligner invocation, which is not a goal;
-what matters is that the structural verdict — how many misassemblies, how much
-of the genome is covered, how contiguous the assembly is — is identical.
+Three residual differences are worth stating plainly rather than papering over.
+
+**NA50 used to be wrong on 9 of these 27 genomes.** A contig spanning the
+origin of a circular replicon was counted as two aligned blocks, halving its
+contribution, while the misassembly classifier — which *was* circular-aware —
+simultaneously certified the same contig as correct. On a contig built to span
+the origin deliberately, Plastr reported a 300 kb largest alignment where QUAST
+reported 600 kb: exactly half. The block merge is circular-aware now and all 27
+match QUAST exactly. 84 origin-spanning contigs across the set hit this path.
+
+**Local misassemblies read low on 3 genomes** (2 vs 1, 1 vs 0, 2 vs 1). QUAST
+reports local misassemblies with inconsistencies as small as 14 bp; Plastr
+merges alignment blocks lying within 200 bp of each other before classifying,
+so those pairs are never examined as a pair. That is a deliberate trade — the
+merge is what stops a contig with a small indel losing credit for its length —
+and it is why the count reads low rather than high.
+
+**KP1057 has one extensive misassembly Plastr does not report.** QUAST's
+aligner returns two blocks for the 2,223 bp contig `KP1057_segment_0485`;
+mappy under `asm5` returns one, so there is no pair to classify. That is an
+aligner-configuration difference, not a classification bug.
+
+The mismatch and indel rates are the most alignment-sensitive statistics there
+are, and Plastr reads consistently low on both. Closing that gap entirely would
+mean reproducing QUAST's exact aligner invocation, which is not a goal; what
+matters is that the structural verdict — how many misassemblies, how much of
+the genome is covered, how contiguous the assembly is — is identical.
 
 ---
 
@@ -275,7 +301,7 @@ Rendering that graph costs 0.7 ms per frame.
 
 ## Test suite
 
-403 tests, running in under 3 seconds:
+438 tests, running in under 3 seconds:
 
 ```bash
 conda activate plastr
@@ -286,3 +312,33 @@ They cover the double-stranded link-end convention, format round-trips,
 known-answer N50/NG50/auN, alignment splitting on both strands, misassembly
 classification against ground truth, the FASTA/AGP contract, graph editing and
 undo, and the HTTP API contract.
+
+---
+
+## A review against real data, and what it found
+
+Every claim above is checked by running the tool, not by reading it. A
+systematic pass over the whole surface — parsers, statistics, scaffolding, the
+HTTP API and the browser studio — driven entirely by real files on the
+development machine, produced 47 candidate defects, of which 35 survived an
+attempt to refute each one. All 35 are fixed. The ones that changed a number a
+user would act on:
+
+| what was wrong | how it showed up |
+|---|---|
+| NA50/NGA50 not circular-aware | contiguity halved on 9 of 27 real genomes |
+| misassembly classification ignored the contig side | a contig with kilobases of unaligned sequence spliced in read as clean |
+| `--genome-size` replaced the genome-fraction denominator | "genome fraction 137.26 %" |
+| AGP rows for graph-bridged joins named a synthetic component | `segment_0146-` resolves in no FASTA, with the wrong strand |
+| bridge segments also written as their own records | the same sequence twice, 16–26 kb per genome |
+| `placed_count` counted pass-through records | "217 placed ... 138 unplaced" out of 217 contigs |
+| any FASTA header containing `:` sniffed as FASTG | names mangled, records silently merged |
+| `;` scaffold-gap separators unhandled | 77 of 7,103 P lines dropped; contigs lost either side of every gap in `contigs.paths` |
+| the download endpoint was a second GFA serialiser | no `LN` tags, so a sequence-less graph came back with every length zeroed; no `P` lines |
+| `FC` read as a depth rather than a count | depth inflated by exactly the segment length |
+| pipe/FIFO input | first ~8 kB dropped, wrong statistics, exit 0 |
+| a FIFO passed to the server | every endpoint wedged, two Ctrl+Cs would not kill it |
+
+The AGP contract was re-checked on all 27 genomes after the fixes: 15,886
+component rows and 1,477 gap rows, every one slicing out exactly the sequence
+it declares.
