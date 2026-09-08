@@ -71,6 +71,9 @@ const WIDTH_BUCKETS = 48;
  */
 const EDGE_EXTENSION_WORLD = 5;
 
+/** Widest a node body should get, in CSS pixels, when a fit zooms in. */
+const MAX_NODE_BODY_PX = 44;
+
 /**
  * How fast label text grows with zoom. Bandage draws text in scene coordinates
  * scaled by 1 / (1 + (zoom - 1) * factor) (`drawTextPathAtLocation`,
@@ -631,6 +634,24 @@ export class Renderer {
     this.requestDraw();
   }
 
+  /**
+   * The most zoomed-in a fit should ever go.
+   *
+   * Framing one short contig would otherwise solve for whatever scale makes a
+   * five-unit stub fill the window, which paints a single ribbon a hundred
+   * pixels thick and tells the user nothing. Cap it where the widest node body
+   * is still a ribbon rather than a slab, so framing a small selection centres
+   * it at a readable size instead of swallowing the screen.
+   */
+  _maxUsefulScale() {
+    let widest = 0;
+    for (let i = 0; i < this.segWidth.length; i++) {
+      if (this.segWidth[i] > widest) widest = this.segWidth[i];
+    }
+    if (!(widest > 0)) return 20;
+    return Math.min(20, Math.max(1, MAX_NODE_BODY_PX / widest));
+  }
+
   /** Fit the given segment indices (or the whole graph) into the viewport. */
   fitToView(indices, padding = 0.08) {
     const g = this.graph;
@@ -639,7 +660,7 @@ export class Renderer {
     const w = Math.max(1, maxX - minX);
     const h = Math.max(1, maxY - minY);
     const s = Math.min(this.width / (w * (1 + padding * 2)), this.height / (h * (1 + padding * 2)));
-    this.view.scale = Math.max(1e-4, Math.min(20, s));
+    this.view.scale = Math.max(1e-4, Math.min(this._maxUsefulScale(), s));
     this.view.cx = (minX + maxX) / 2;
     this.view.cy = (minY + maxY) / 2;
     this._emit('viewchange');

@@ -166,7 +166,10 @@
             <button class="btn btn-sm btn-primary" id="find-go">Find</button>
           </div>
         </div>
-        <label class="check"><input type="checkbox" id="find-exact"> Whole name only</label>
+        <!-- On by default, as Bandage's Exact radio is (mainwindow.ui:1511-1520):
+             typing a whole contig name should find that contig, not every
+             contig whose name contains it. -->
+        <label class="check"><input type="checkbox" id="find-exact" checked> Whole name only</label>
         <p class="muted small" id="find-help">Every match is selected and framed in the view.
           Separate several names with commas.</p>
         <div id="find-results" class="results" aria-live="polite"></div>
@@ -395,7 +398,6 @@
         <label class="field"><span class="field-label">Node length per megabase</span>
           <input type="number" id="set-permb" value="1000" min="1" max="1000000" step="100"></label>
         <label class="check"><input type="checkbox" id="set-outline" checked> Draw node outlines</label>
-        <label class="check"><input type="checkbox" id="set-antialias" checked> Antialiasing</label>
         <div class="btn-row"><button class="btn btn-sm" id="set-reset">Restore defaults</button></div>
       </div>
     </section>

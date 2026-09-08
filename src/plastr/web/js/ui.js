@@ -1100,11 +1100,11 @@ export function createApp() {
    * Drawing tunables, Bandage's settings dialog cut down to the ones that
    * change the picture rather than the algorithm.
    *
-   * The renderer reads `baseWidth`, `depthPower`, `depthEffectOnWidth` and
-   * `outlineNodes` today; `edgeWidth`, `labelTextSize`, `antialias` and the
-   * three label fields are the option names it is expected to grow. Setting an
-   * option the renderer does not read yet is inert, so every control is wired
-   * now and starts working the moment the renderer honours it.
+   * There is deliberately no antialiasing toggle. Bandage has one because Qt
+   * can be told to stop antialiasing a QPainterPath, which on a large graph is
+   * a real speed-up; the Canvas 2D API has no equivalent -- `imageSmoothing`
+   * governs drawn images, not path edges -- so the control could only ever
+   * have been a switch that did nothing.
    */
   const SETTINGS_KEY = 'plastr-settings';
   const SETTINGS_DEFAULTS = Object.freeze({
@@ -1114,7 +1114,6 @@ export function createApp() {
     edgeWidth: 1.1,
     textSize: 11,
     outline: true,
-    antialias: true,
     autoLength: true,
     perMegabase: 1000,
     labelName: false,
@@ -1143,7 +1142,6 @@ export function createApp() {
     renderer.setOption('edgeWidth', settings.edgeWidth);
     renderer.setOption('labelTextSize', settings.textSize);
     renderer.setOption('outlineNodes', settings.outline);
-    renderer.setOption('antialias', settings.antialias);
     renderer.setOption('labelName', settings.labelName);
     renderer.setOption('labelLength', settings.labelLength);
     renderer.setOption('labelDepth', settings.labelDepth);
@@ -1183,7 +1181,7 @@ export function createApp() {
       if ($(out)) $(out).value = Number(settings[key]).toFixed(dp);
     }
     const pairs = [
-      ['set-outline', 'outline'], ['set-antialias', 'antialias'],
+      ['set-outline', 'outline'],
       ['set-autolength', 'autoLength'],
       ['lab-name', 'labelName'], ['lab-length', 'labelLength'], ['lab-depth', 'labelDepth'],
     ];
@@ -1281,7 +1279,7 @@ export function createApp() {
 
     // Node labels and settings
     for (const [id, key] of [['lab-name', 'labelName'], ['lab-length', 'labelLength'],
-      ['lab-depth', 'labelDepth'], ['set-outline', 'outline'], ['set-antialias', 'antialias']]) {
+      ['lab-depth', 'labelDepth'], ['set-outline', 'outline']]) {
       on(id, 'change', () => { settings[key] = checked(id); applyRenderSettings(); saveSettings(); });
     }
     for (const [key, slider, out, dp] of SETTINGS_CONTROLS) {
