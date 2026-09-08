@@ -17,5 +17,9 @@ dependencies:
   # tests
   - pytest>=7.4
   - httpx>=0.26
+  # Runs the browser-side suite under Node's own test runner. Nothing in web/
+  # is built or bundled -- this is only so the drawing code can be tested at
+  # all; without it those tests skip and the Python suite is unaffected.
+  - nodejs>=18
   - pip:
       - .

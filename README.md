@@ -283,6 +283,15 @@ conda activate plastr
 python -m pytest tests/ -v
 ```
 
+That runs the browser-side tests too. The drawing is most of what you actually
+look at, so `tests/js/` covers the geometry and layout contracts — that a
+contig's drawn length tracks its bases at any assembly size, that a long contig
+gets enough vertices to curve, that joined contigs come to rest end to end, and
+that separate components do not overlap. They run under Node's own test runner,
+so there is still no `package.json`, nothing to install and no build step. Node
+comes from `environment.yml`; without it those tests skip and the Python suite
+is unaffected.
+
 The design document is in
 [`docs/superpowers/specs/`](docs/superpowers/specs/). The layering is strict:
 `core/` is pure Python with no web knowledge, `server/` shapes JSON and contains
