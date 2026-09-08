@@ -498,6 +498,7 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                     built=p.build() if p.plan else None,
                     source_path=p.source_path,
                     reference_path=p.reference_path,
+                    graph=p.graph,
                 )
                 return _text_download(html, "report.html", "text/html")
         fail(f"unknown download kind {kind!r}", 404)

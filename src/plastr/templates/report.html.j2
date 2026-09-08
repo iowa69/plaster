@@ -246,6 +246,7 @@ footer.doc {
 </header>
 
 {% set tabs = [('summary', 'Summary'), ('basic', 'Basic statistics')] %}
+{% if contigs and contigs.rows %}{% set tabs = tabs + [('contigs', 'Contigs')] %}{% endif %}
 {% if reference %}{% set tabs = tabs + [('reference', 'Reference-based'), ('misassemblies', 'Misassemblies')] %}{% endif %}
 {% if scaffold %}{% set tabs = tabs + [('scaffolding', 'Scaffolding')] %}{% endif %}
 {% if comparison %}{% set tabs = tabs + [('comparison', 'Comparison')] %}{% endif %}
@@ -341,6 +342,74 @@ footer.doc {
     </tbody>
   </table>
 </section>
+
+<!-- ==================== CONTIGS ==================== -->
+{% if contigs and contigs.rows %}
+<section class="panel" id="panel-contigs" role="tabpanel" aria-labelledby="tab-contigs" hidden>
+  <h2>Contigs</h2>
+  <p class="lead">One row per segment of the graph, longest first, with the same columns as the
+     CSV export. Click a column header to sort.
+     {% if contigs.min_contig %}Segments shorter than {{ contigs.min_contig | fmt_int }} bp were
+     filtered out before any statistic in this report was computed.{% endif %}</p>
+  {% if contigs.dropped %}
+  <div class="callout"><b>This table is not complete.</b>
+     It lists the {{ contigs.shown | fmt_int }} longest of {{ contigs.total | fmt_int }} contigs;
+     the remaining {{ contigs.dropped | fmt_int }} shorter contigs are not shown. Export the
+     per-contig CSV for all of them.</div>
+  {% endif %}
+  <div class="scroll">
+  <table class="sortable">
+    <caption>{{ contigs.shown | fmt_int }} of {{ contigs.total | fmt_int }} contigs</caption>
+    <thead>
+      <tr>
+        <th>Contig</th>
+        <th class="num">Length</th>
+        <th class="num">Depth</th>
+        <th class="num">GC</th>
+        <th class="num">Component</th>
+        <th class="num">Links (start)</th>
+        <th class="num">Links (end)</th>
+        <th>Shape</th>
+        {% if contigs.has_reference %}
+        <th>Reference</th>
+        <th>Reference span</th>
+        <th class="num">Identity</th>
+        <th>Strand</th>
+        {% endif %}
+        {% if contigs.has_scaffold %}
+        <th>Scaffold</th>
+        <th class="num">Position</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in contigs.rows %}
+      <tr>
+        <td class="mono">{{ row.name }}</td>
+        <td class="num" data-sort="{{ row.length }}">{{ row.length_text }}</td>
+        <td class="num" data-sort="{{ row.depth if row.depth is not none else -1 }}">{{ row.depth_text }}</td>
+        <td class="num" data-sort="{{ row.gc if row.gc is not none else -1 }}">{{ row.gc_text }}</td>
+        <td class="num">{{ row.component }}</td>
+        <td class="num">{{ row.deg_start }}</td>
+        <td class="num">{{ row.deg_end }}</td>
+        <td data-sort="{{ 1 if row.circular else 0 }}">{% if row.circular %}<span class="tag">circular</span>{% else %}{{ dash }}{% endif %}</td>
+        {% if contigs.has_reference %}
+        <td class="mono">{{ row.ref }}</td>
+        <td class="mono">{{ row.ref_span }}</td>
+        <td class="num" data-sort="{{ row.identity if row.identity is not none else -1 }}">{{ row.identity_text }}</td>
+        <td><span class="orient">{{ row.strand }}</span></td>
+        {% endif %}
+        {% if contigs.has_scaffold %}
+        <td class="mono">{{ row.scaffold }}</td>
+        <td class="num">{{ row.position }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
 
 <!-- ==================== REFERENCE ==================== -->
 {% if reference %}
@@ -517,7 +586,9 @@ footer.doc {
   <h2>Comparison</h2>
   <p class="lead">{{ comparison.columns | length }} assemblies side by side.</p>
   <div class="scroll">
-  <table class="compare sortable">
+  {# Not sortable: the rows are a curated order in incompatible units, and a
+     click that sorts bp against counts against percentages destroys it. #}
+  <table class="compare">
     <caption>Side-by-side statistics</caption>
     <thead>
       <tr>

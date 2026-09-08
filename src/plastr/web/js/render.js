@@ -38,6 +38,20 @@ export const CATEGORICAL = [
 /** Number of quantised entries used for a continuous ramp. */
 const RAMP_STEPS = 32;
 /**
+ * Size of the quantised hue wheel behind the 'random' colour mode.
+ *
+ * A palette entry per segment gives every node its own batch key, so the
+ * painter's (colour, width) batching collapses to one `stroke()` per node on
+ * exactly the graphs it exists to rescue. 256 hues sit 1.4 degrees apart —
+ * closer than two contigs can be told apart anyway — and put a ceiling on the
+ * batch count instead.
+ */
+const HUE_STEPS = 256;
+const HUE_PALETTE = [];
+for (let i = 0; i < HUE_STEPS; i++) {
+  HUE_PALETTE.push(`hsl(${Math.round((i * 360) / HUE_STEPS)} 58% 62%)`);
+}
+/**
  * Number of quantised line-width buckets.
  *
  * Width carries read depth, so coarse buckets throw that signal away: at 12 a
@@ -83,16 +97,49 @@ function buildRamp(stops, steps = RAMP_STEPS) {
   return out;
 }
 
-/** Deterministic pseudo-random colour for an arbitrary key. */
-export function hashColour(key, sat = 62, light = 58) {
+/** FNV-1a over a key, so a colour drawn from it survives a reload. */
+function hashKey(key) {
   const s = String(key);
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  const hue = Math.abs(h) % 360;
-  return `hsl(${hue} ${sat}% ${light}%)`;
+  return Math.abs(h);
+}
+
+/** Deterministic pseudo-random colour for an arbitrary key. */
+export function hashColour(key, sat = 62, light = 58) {
+  return `hsl(${hashKey(key) % 360} ${sat}% ${light}%)`;
+}
+
+/**
+ * Value at a fractional index in a sorted array, interpolating between the two
+ * neighbours (`AssemblyGraph::getValueUsingFractionalIndex`).
+ */
+function fractionalIndex(sorted, index) {
+  const n = sorted.length;
+  if (!n) return 0;
+  if (n === 1) return sorted[0];
+  const whole = Math.floor(index);
+  if (whole < 0) return sorted[0];
+  if (whole >= n - 1) return sorted[n - 1];
+  const f = index - whole;
+  return sorted[whole] * (1 - f) + sorted[whole + 1] * f;
+}
+
+/** First and third quartiles of the drawn segments' depth, or null. */
+function depthQuartiles(graph) {
+  const ds = [];
+  for (const s of graph.segments) {
+    if (s.depth !== null && Number.isFinite(s.depth)) ds.push(s.depth);
+  }
+  if (!ds.length) return null;
+  ds.sort((a, b) => a - b);
+  return [
+    fractionalIndex(ds, (ds.length - 1) / 4),
+    fractionalIndex(ds, ((ds.length - 1) * 3) / 4),
+  ];
 }
 
 /** Read the theme tokens the renderer needs out of the stylesheet. */
@@ -132,6 +179,8 @@ export class ColourMapper {
     this.palette = ['#7f8ea3'];
     this.segPal = new Int32Array(0);
     this.legend = { type: 'none' };
+    /** Manual [low, high] depth cutoffs; null takes Bandage's auto quartiles. */
+    this.depthRange = null;
   }
 
   setMode(mode) { this.mode = mode || 'uniform'; }
@@ -146,17 +195,29 @@ export class ColourMapper {
     const grey = theme.faint;
 
     switch (this.mode) {
-      case 'depth': return this._continuous(graph, theme, {
-        ramp: VIRIDIS,
-        label: 'depth (x)',
-        log: true,
-        value: (s) => (s.depth === null ? null : s.depth),
-        lo: graph.stats.depth.min,
-        hi: graph.stats.depth.max,
-        available: graph.stats.depth.has,
-        missingMsg: 'no depth in this graph',
-        format: (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + '×',
-      });
+      case 'depth': {
+        // Bandage's automatic cutoffs are the first and third quartiles of node
+        // depth rather than the extremes (`autoDepthValue`,
+        // graphicsitemnode.cpp:851-866). Against min/max a single 500x repeat
+        // squeezes every ordinary node into the bottom of the ramp and the
+        // colouring stops saying anything; against the quartiles the ramp
+        // spends itself on the bulk of the graph and the outliers clamp.
+        let [lo, hi] = this.depthRange || depthQuartiles(graph)
+          || [graph.stats.depth.min, graph.stats.depth.max];
+        if (!(hi > lo)) { lo = graph.stats.depth.min; hi = graph.stats.depth.max; }
+        return this._continuous(graph, theme, {
+          ramp: VIRIDIS,
+          label: 'depth (x)',
+          log: true,
+          value: (s) => (s.depth === null ? null : s.depth),
+          lo,
+          hi,
+          available: graph.stats.depth.has,
+          missingMsg: 'no depth in this graph',
+          format: (v) => (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + '×',
+          note: this.depthRange ? '' : 'auto range: 1st to 3rd quartile; outside it colours clamp',
+        });
+      }
 
       case 'gc': return this._continuous(graph, theme, {
         ramp: COOLWARM,
@@ -202,10 +263,10 @@ export class ColourMapper {
       case 'random': {
         // One colour per node, seeded from its name so it is stable across
         // reloads. This is Bandage's default and it is the most legible way to
-        // follow an individual contig through a tangle.
-        this.palette = graph.segments.map((s) => hashColour('seg:' + s.name, 58, 62));
-        if (!this.palette.length) this.palette = [theme.node];
-        for (const s of graph.segments) this.segPal[s.idx] = s.idx;
+        // follow an individual contig through a tangle. The hue is quantised
+        // (see HUE_STEPS) so the painter can still batch.
+        this.palette = HUE_PALETTE;
+        for (const s of graph.segments) this.segPal[s.idx] = hashKey('seg:' + s.name) % HUE_STEPS;
         this.legend = {
           type: 'none',
           label: 'random per segment',
@@ -314,6 +375,7 @@ export class ColourMapper {
       label: cfg.label + (cfg.log ? ' (log)' : ''),
       ramp,
       ticks: [cfg.format(lo), cfg.format(mid), cfg.format(hi)],
+      note: cfg.note || '',
       missingColour: theme.faint,
     };
     return this;
@@ -372,10 +434,15 @@ export class Renderer {
       showGrid: false,
       depthWidth: true,
       widthScale: 1,
-      // World units, constant like Bandage's node width. Paired with the
-      // absolute length scale this makes a short contig a stub and a long one
-      // a ribbon, at the same drawn size in any graph.
-      baseWidth: 5.5,
+      // World units, constant like Bandage's node width (`averageNodeWidth`).
+      // Paired with the absolute length scale this makes a short contig a stub
+      // and a long one a ribbon, at the same drawn size in any graph.
+      baseWidth: 5,
+      // Shape of the depth-to-width curve: `depthPower` is how fast width
+      // follows depth and `depthEffectOnWidth` how much of that reaches the
+      // drawing at all. Bandage's defaults (settings.cpp:39-41).
+      depthPower: 0.5,
+      depthEffectOnWidth: 0.5,
     };
 
     this.selected = new Set();   // segment indices
@@ -385,6 +452,7 @@ export class Renderer {
     this.segWidth = new Float32Array(0);
     this.segBucket = new Int32Array(0);
     this.bucketWidth = new Float32Array(WIDTH_BUCKETS);
+    this._arrowBuf = new Float64Array(6);
 
     this._buckets = [];
     this._usedKeys = [];
@@ -489,23 +557,41 @@ export class Renderer {
     this.segBucket = new Int32Array(n);
     if (!n) return;
 
-    // Median depth gives a stable reference point for the width scale, so a
-    // handful of very deep repeat nodes don't flatten everything else.
-    let median = 1;
+    // Bandage's width curve, exactly: depth relative to the *mean depth of the
+    // drawn nodes*, raised to `depthPower`, damped towards 1 by
+    // `depthEffectOnWidth` (getNodeWidth, graphicsitemnode.cpp:889-895 and
+    // 917-924). The damping is what keeps the drawing readable: at the default
+    // half-power, half-effect a 100x repeat is five times a mean node's width
+    // rather than a hundred times, and no clamp is needed to rescue it.
+    let mean = 0;
     if (this.opts.depthWidth && g.stats.depth.has) {
-      const ds = [];
-      for (const s of g.segments) if (s.depth !== null && Number.isFinite(s.depth) && s.depth > 0) ds.push(s.depth);
-      if (ds.length) { ds.sort((a, b) => a - b); median = ds[ds.length >> 1] || 1; }
+      // Weighted by length, as Bandage's mean drawn depth is (getMeanDepth,
+      // assemblygraph.cpp:241-263): a thousand short misassembled fragments
+      // must not outvote the megabase contig they were broken off, or every
+      // real node comes out over-wide.
+      let sum = 0, bases = 0, plain = 0, count = 0;
+      for (const s of g.segments) {
+        if (s.depth === null || !Number.isFinite(s.depth)) continue;
+        const len = s.length > 0 ? s.length : 0;
+        sum += s.depth * len;
+        bases += len;
+        plain += s.depth;
+        count++;
+      }
+      // A graph that declares no lengths still has depths worth scaling by.
+      mean = bases > 0 ? sum / bases : (count ? plain / count : 0);
     }
     const base = this.opts.baseWidth * this.opts.widthScale;
+    const power = this.opts.depthPower;
+    const effect = this.opts.depthEffectOnWidth;
     let minW = Infinity, maxW = -Infinity;
     for (const s of g.segments) {
-      let f = 1;
-      if (this.opts.depthWidth && g.stats.depth.has && s.depth !== null && Number.isFinite(s.depth)) {
-        f = Math.sqrt(Math.max(s.depth, 1e-3) / median);
-        f = Math.max(0.35, Math.min(3.2, f));
+      // Bandage's fallback when there is no mean to divide by.
+      let rel = 1;
+      if (mean > 0 && s.depth !== null && Number.isFinite(s.depth)) {
+        rel = Math.max(0, s.depth / mean);
       }
-      const w = base * f;
+      const w = Math.max(0, base * ((Math.pow(rel, power) - 1) * effect + 1));
       this.segWidth[s.idx] = w;
       if (w < minW) minW = w;
       if (w > maxW) maxW = w;
@@ -524,7 +610,8 @@ export class Renderer {
 
   setOption(key, value) {
     this.opts[key] = value;
-    if (key === 'depthWidth' || key === 'widthScale' || key === 'baseWidth') this.updateStyle();
+    if (key === 'depthWidth' || key === 'widthScale' || key === 'baseWidth'
+        || key === 'depthPower' || key === 'depthEffectOnWidth') this.updateStyle();
     this.requestDraw();
   }
 
@@ -616,8 +703,11 @@ export class Renderer {
   /**
    * Append a segment's polyline to the current path. Written without closures
    * because this runs once per visible segment per frame.
+   *
+   * `trimPx` stops the stroke short of the final vertex, leaving room for the
+   * arrowhead wedge (`_arrowPath`) to finish the node.
    */
-  _segPath(ctx, si, smooth) {
+  _segPath(ctx, si, smooth, trimPx = 0) {
     const g = this.graph;
     const seg = g.segments[si];
     const p0 = seg.p0, k = seg.k;
@@ -631,19 +721,35 @@ export class Renderer {
       ctx.lineTo(x + 0.01, y);
       return;
     }
+    let ex = px[p0 + k - 1] * s + ox, ey = py[p0 + k - 1] * s + oy;
+    if (trimPx > 0) {
+      const bx = px[p0 + k - 2] * s + ox, by = py[p0 + k - 2] * s + oy;
+      const dx = ex - bx, dy = ey - by;
+      const d = Math.hypot(dx, dy);
+      // Clamped to the final leg: a node shorter than the wedge collapses to
+      // nothing here and is drawn as the wedge alone, which is Bandage's
+      // degenerate pure-triangle node.
+      if (d > 0) {
+        const t = Math.min(trimPx, d) / d;
+        ex -= dx * t; ey -= dy * t;
+      }
+    }
     if (!smooth || k === 2) {
       ctx.moveTo(px[p0] * s + ox, py[p0] * s + oy);
-      for (let i = 1; i < k; i++) ctx.lineTo(px[p0 + i] * s + ox, py[p0 + i] * s + oy);
+      for (let i = 1; i < k - 1; i++) ctx.lineTo(px[p0 + i] * s + ox, py[p0 + i] * s + oy);
+      ctx.lineTo(ex, ey);
       return;
     }
     // Quadratic spline through particle midpoints: smooth without overshoot.
     ctx.moveTo(px[p0] * s + ox, py[p0] * s + oy);
     for (let i = 1; i < k - 1; i++) {
       const cxp = px[p0 + i] * s + ox, cyp = py[p0 + i] * s + oy;
-      const nxp = px[p0 + i + 1] * s + ox, nyp = py[p0 + i + 1] * s + oy;
+      const end = i + 1 === k - 1;
+      const nxp = end ? ex : px[p0 + i + 1] * s + ox;
+      const nyp = end ? ey : py[p0 + i + 1] * s + oy;
       ctx.quadraticCurveTo(cxp, cyp, (cxp + nxp) / 2, (cyp + nyp) / 2);
     }
-    ctx.lineTo(px[p0 + k - 1] * s + ox, py[p0 + k - 1] * s + oy);
+    ctx.lineTo(ex, ey);
   }
 
   /**
@@ -718,6 +824,60 @@ export class Renderer {
     };
   }
 
+  /**
+   * Painted screen width of a segment's ribbon.
+   *
+   * This is the *bucketed* width the painter actually strokes, floor and
+   * ceiling included, so hit testing, halos and the SVG export all agree with
+   * the pixels on screen rather than with the unquantised ideal.
+   */
+  _widthPx(si) {
+    return Math.max(1, Math.min(90, this.bucketWidth[this.segBucket[si]] * this.view.scale));
+  }
+
+  /**
+   * Screen-space wedge that turns a node's flat end into a point: apex on the
+   * final vertex, base half a width back, so the sides run at 45 degrees. That
+   * is exactly the notch Bandage subtracts from the node body
+   * (GraphicsItemNode::shape, graphicsitemnode.cpp:443-467) — the arrowhead is
+   * the end of the node, not an ornament parked beside it.
+   *
+   * Fills `out` with [tipX, tipY, leftX, leftY, rightX, rightY].
+   */
+  _arrowPoints(si, bodyPx, out) {
+    const g = this.graph;
+    const seg = g.segments[si];
+    if (seg.k < 2) return false;
+    const pEnd = seg.p0 + seg.k - 1;
+    const x2 = this.worldToScreenX(g.px[pEnd]);
+    const y2 = this.worldToScreenY(g.py[pEnd]);
+    let dx = x2 - this.worldToScreenX(g.px[pEnd - 1]);
+    let dy = y2 - this.worldToScreenY(g.py[pEnd - 1]);
+    const d = Math.hypot(dx, dy);
+    if (!d) return false;
+    dx /= d; dy /= d;
+    const half = bodyPx / 2;
+    // A node shorter than half its own width cannot give the wedge its full
+    // 45 degrees, so the base falls back to the previous vertex and the node
+    // becomes a plain triangle, as it does in Bandage.
+    const back = Math.min(half, d);
+    const bx = x2 - dx * back, by = y2 - dy * back;
+    out[0] = x2; out[1] = y2;
+    out[2] = bx - dy * half; out[3] = by + dx * half;
+    out[4] = bx + dy * half; out[5] = by - dx * half;
+    return true;
+  }
+
+  /** Append one arrowhead wedge to the current path. */
+  _arrowPath(ctx, si, bodyPx) {
+    const a = this._arrowBuf;
+    if (!this._arrowPoints(si, bodyPx, a)) return;
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(a[2], a[3]);
+    ctx.lineTo(a[4], a[5]);
+    ctx.closePath();
+  }
+
   /** Screen-space polyline points for a segment (used by the SVG writer). */
   _segPoints(si) {
     const g = this.graph;
@@ -759,6 +919,10 @@ export class Renderer {
 
     const scene = this._scene(W, H);
     const scale = this.view.scale;
+    // Below this the wedge would be a pixel or two and only make the node look
+    // frayed, so the arrowheads (and with them the flat cap they need) are left
+    // off entirely.
+    const arrows = this.opts.showArrows && scale > 0.08;
 
     if (this.opts.showGrid) this._paintGrid(ctx, W, H);
 
@@ -783,8 +947,7 @@ export class Renderer {
       ctx.lineJoin = 'round';
       for (const si of scene.vis) {
         if (!this.selected.has(si)) continue;
-        const lw = Math.max(3, Math.min(90, this.segWidth[si] * scale + 6));
-        ctx.lineWidth = lw;
+        ctx.lineWidth = this._widthPx(si) + 6;
         ctx.beginPath();
         this._segPath(ctx, si, this.graph.segments[si].drawLen * scale > 30);
         ctx.stroke();
@@ -806,7 +969,9 @@ export class Renderer {
       if (arr.length === 0) keys.push(key);
       arr.push(si);
     }
-    ctx.lineCap = 'round';
+    // Bandage strokes the node body with a flat cap and then cuts the
+    // arrowhead out of it, so an arrowed node is still one solid shape.
+    ctx.lineCap = arrows ? 'butt' : 'round';
     ctx.lineJoin = 'round';
 
     // Two passes per width bucket: a dark outline, then the coloured body on
@@ -824,58 +989,55 @@ export class Renderer {
         // outline pass below could never trigger because `body` was never
         // allowed under its own threshold.
         const body = Math.max(1, Math.min(90, this.bucketWidth[wIdx] * scale));
+        const rim = Math.min(2.6, Math.max(1, body * 0.28));
+        const tip = arrows && body >= 2.5 ? body / 2 : 0;
         if (pass === 0) {
           // Skip the outline when the body is too thin for it to read.
           if (body < 2.2) continue;
           ctx.strokeStyle = th.outline || 'rgba(20,26,34,0.85)';
-          ctx.lineWidth = body + Math.min(2.6, Math.max(1, body * 0.28));
+          ctx.lineWidth = body + rim;
         } else {
           ctx.strokeStyle = pal[colIdx] || th.node;
           ctx.lineWidth = body;
         }
         ctx.beginPath();
         for (const si of arr) {
-          this._segPath(ctx, si, g.segments[si].drawLen * scale > 30);
+          this._segPath(ctx, si, g.segments[si].drawLen * scale > 30, tip);
         }
         ctx.stroke();
+        if (!tip) continue;
+        // The wedge is a filled shape rather than a stroke, so it needs a path
+        // of its own; it rides in the same batch to keep the style changes down.
+        ctx.beginPath();
+        for (const si of arr) this._arrowPath(ctx, si, body);
+        if (pass === 0) {
+          ctx.lineWidth = rim;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.fill();
+        }
       }
     }
     for (const key of keys) buckets[key].length = 0;
 
     /* ---- hover highlight ---- */
     if (o.interactive && this.hoverIdx >= 0 && this.hoverIdx < g.segments.length) {
+      const hw = this._widthPx(this.hoverIdx) + 1.5;
+      const tip = arrows && hw >= 2.5 ? hw / 2 : 0;
       ctx.strokeStyle = th.accent;
-      ctx.lineWidth = Math.max(1.2, Math.min(90, this.segWidth[this.hoverIdx] * scale + 1.5));
+      ctx.lineWidth = hw;
       ctx.globalAlpha = 0.9;
       ctx.beginPath();
-      this._segPath(ctx, this.hoverIdx, true);
+      this._segPath(ctx, this.hoverIdx, true, tip);
       ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    /* ---- direction arrows ---- */
-    if (this.opts.showArrows && scene.vis.length <= 4000 && scale > 0.08) {
-      ctx.fillStyle = th.dim;
-      for (const si of scene.vis) {
-        const seg = g.segments[si];
-        if (seg.drawLen * scale < 22) continue;
-        const pEnd = seg.p0 + seg.k - 1;
-        const pPrev = seg.p0 + Math.max(0, seg.k - 2);
-        const x2 = this.worldToScreenX(g.px[pEnd]);
-        const y2 = this.worldToScreenY(g.py[pEnd]);
-        const x1 = this.worldToScreenX(g.px[pPrev]);
-        const y1 = this.worldToScreenY(g.py[pPrev]);
-        let dx = x2 - x1, dy = y2 - y1;
-        const d = Math.hypot(dx, dy) || 1;
-        dx /= d; dy /= d;
-        const size = Math.max(3.5, Math.min(11, this.segWidth[si] * scale * 0.9 + 2.5));
+      if (tip) {
+        ctx.fillStyle = th.accent;
         ctx.beginPath();
-        ctx.moveTo(x2 + dx * size, y2 + dy * size);
-        ctx.lineTo(x2 - dy * size * 0.55, y2 + dx * size * 0.55);
-        ctx.lineTo(x2 + dy * size * 0.55, y2 - dx * size * 0.55);
-        ctx.closePath();
+        this._arrowPath(ctx, this.hoverIdx, hw);
         ctx.fill();
       }
+      ctx.globalAlpha = 1;
     }
 
     /* ---- labels ---- */
@@ -891,7 +1053,7 @@ export class Renderer {
         if (seg.drawLen * scale < 46) continue;
         const mid = seg.p0 + (seg.k >> 1);
         const x = this.worldToScreenX(g.px[mid]);
-        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this.segWidth[si] * scale * 0.6 + 7);
+        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this._widthPx(si) * 0.6 + 7);
         const label = seg.name;
         ctx.strokeText(label, x, y);
         ctx.fillText(label, x, y);
@@ -952,7 +1114,10 @@ export class Renderer {
     const candidates = this._visible.length ? this._visible : g.segments.map((s) => s.idx);
     let best = -1, bestD = Infinity;
     for (const si of candidates) {
-      const halfW = this.segWidth[si] / 2;
+      // The painted width, not the ideal one: the ribbon on screen is the
+      // bucketed width with a pixel floor, and the clickable region has to be
+      // the shape the user can actually see.
+      const halfW = this._widthPx(si) / (2 * this.view.scale);
       const reach = tol + halfW;
       const o = si * 4;
       if (wx < g.bbox[o] - reach || wx > g.bbox[o + 2] + reach ||
@@ -1226,48 +1391,33 @@ export class Renderer {
       parts.push(`<g fill="none" stroke="${esc(th.sel)}" stroke-opacity="0.5" stroke-linecap="round" stroke-linejoin="round">`);
       for (const si of scene.vis) {
         if (!this.selected.has(si)) continue;
-        const lw = Math.max(3, Math.min(90, this.segWidth[si] * scale + 6));
-        parts.push(`<path d="${this._svgPathData(si, num)}" stroke-width="${num(lw)}"/>`);
+        parts.push(`<path d="${this._svgPathData(si, num)}" stroke-width="${num(this._widthPx(si) + 6)}"/>`);
       }
       parts.push('</g>');
     }
 
-    // segments
+    // segments, with the arrowhead wedges the canvas painter draws
+    const arrows = this.opts.showArrows && scale > 0.08;
     const pal = this.colour.palette;
     const nPal = pal.length;
-    parts.push('<g fill="none" stroke-linecap="round" stroke-linejoin="round">');
+    const wedges = [];
+    const pts = this._arrowBuf;
+    parts.push(`<g fill="none" stroke-linecap="${arrows ? 'butt' : 'round'}" stroke-linejoin="round">`);
     for (const si of scene.vis) {
       const col = pal[this.colour.segPal[si] % nPal] || th.node;
-      // Same floor as the canvas painter, so the export matches the screen.
-      const lw = Math.max(1, Math.min(90, this.segWidth[si] * scale));
+      // The painted width, so the export matches the screen exactly.
+      const lw = this._widthPx(si);
+      const tip = arrows && lw >= 2.5 ? lw / 2 : 0;
       const seg = g.segments[si];
-      parts.push(`<path d="${this._svgPathData(si, num)}" stroke="${esc(col)}" stroke-width="${num(lw)}">`
+      parts.push(`<path d="${this._svgPathData(si, num, tip)}" stroke="${esc(col)}" stroke-width="${num(lw)}">`
         + `<title>${esc(seg.name)} · ${esc(fmtBp(seg.length))}</title></path>`);
+      if (tip && this._arrowPoints(si, lw, pts)) {
+        wedges.push(`<polygon fill="${esc(col)}" points="${num(pts[0])},${num(pts[1])} `
+          + `${num(pts[2])},${num(pts[3])} ${num(pts[4])},${num(pts[5])}"/>`);
+      }
     }
     parts.push('</g>');
-
-    // arrows
-    if (this.opts.showArrows && scene.vis.length <= 4000 && scale > 0.08) {
-      parts.push(`<g fill="${esc(th.dim)}">`);
-      for (const si of scene.vis) {
-        const seg = g.segments[si];
-        if (seg.drawLen * scale < 22) continue;
-        const pEnd = seg.p0 + seg.k - 1;
-        const pPrev = seg.p0 + Math.max(0, seg.k - 2);
-        const x2 = this.worldToScreenX(g.px[pEnd]);
-        const y2 = this.worldToScreenY(g.py[pEnd]);
-        const x1 = this.worldToScreenX(g.px[pPrev]);
-        const y1 = this.worldToScreenY(g.py[pPrev]);
-        let dx = x2 - x1, dy = y2 - y1;
-        const dd = Math.hypot(dx, dy) || 1;
-        dx /= dd; dy /= dd;
-        const s2 = Math.max(3.5, Math.min(11, this.segWidth[si] * scale * 0.9 + 2.5));
-        parts.push(`<polygon points="${num(x2 + dx * s2)},${num(y2 + dy * s2)} `
-          + `${num(x2 - dy * s2 * 0.55)},${num(y2 + dx * s2 * 0.55)} `
-          + `${num(x2 + dy * s2 * 0.55)},${num(y2 - dx * s2 * 0.55)}"/>`);
-      }
-      parts.push('</g>');
-    }
+    if (wedges.length) parts.push('<g>' + wedges.join('') + '</g>');
 
     // labels
     if (this.opts.showLabels && scene.vis.length <= 600) {
@@ -1277,7 +1427,7 @@ export class Renderer {
         if (seg.drawLen * scale < 46) continue;
         const mid = seg.p0 + (seg.k >> 1);
         const x = this.worldToScreenX(g.px[mid]);
-        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this.segWidth[si] * scale * 0.6 + 7);
+        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this._widthPx(si) * 0.6 + 7);
         parts.push(`<text x="${num(x)}" y="${num(y)}" stroke="${esc(th.canvasBg)}" stroke-width="3" `
           + `paint-order="stroke" >${esc(seg.name)}</text>`);
       }
@@ -1292,9 +1442,18 @@ export class Renderer {
     return parts.join('\n');
   }
 
-  _svgPathData(si, num) {
+  _svgPathData(si, num, trimPx = 0) {
     const pts = this._segPoints(si);
     if (!pts.length) return '';
+    if (trimPx > 0 && pts.length > 1) {
+      const a = pts[pts.length - 2], b = pts[pts.length - 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const d = Math.hypot(dx, dy);
+      if (d > 0) {
+        const t = Math.min(trimPx, d) / d;
+        pts[pts.length - 1] = [b[0] - dx * t, b[1] - dy * t];
+      }
+    }
     if (pts.length < 3) {
       return pts.map((p, i) => (i ? 'L' : 'M') + num(p[0]) + ' ' + num(p[1])).join(' ');
     }

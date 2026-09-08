@@ -350,3 +350,143 @@ class TestFilteredTopology:
         assert m.num_links == 0, "a link to a filtered-out segment is not a connection"
         assert m.num_components == 2
         assert m.dead_ends == 4  # both ends of both surviving segments
+
+
+# ---------------------------------------------------------------------------
+# Bandage's "Graph information" numbers
+# ---------------------------------------------------------------------------
+
+
+class TestGraphInformation:
+    """The extra statistics Bandage shows in its Graph information dialog.
+
+    Every expectation here is worked out by hand from :class:`TINY` (see
+    ``tests/conftest.py``) or from the four-contig fixture, so a change of
+    definition fails the test rather than quietly changing the report.
+    """
+
+    def test_tiny_graph_by_hand(self, tiny_graph):
+        m = compute_metrics(tiny_graph)
+        # Overlaps are 10, 10 and 0 (the R self-loop carries none).
+        assert (m.overlap_min, m.overlap_max) == (0, 10)
+        # A, B and C each give up 10 bp; D and R have nothing to give up.
+        assert m.total_length_no_overlaps == 90 + 70 + 50 + 40 + 30
+        # 4 dead ends out of the 10 ends five contigs have.
+        assert m.dead_end_percent == pytest.approx(40.0)
+        assert m.largest_component_length == 240
+        assert m.largest_component_percent == pytest.approx(100.0 * 240 / 310)
+        # Only D is unconnected; R's self-loop keeps it out of this.
+        assert m.orphaned_length == 40
+        assert m.orphaned_percent == pytest.approx(100.0 * 40 / 310)
+
+    def test_tiny_graph_estimated_sequence_length(self, tiny_graph):
+        m = compute_metrics(tiny_graph)
+        # Median depth by base is 20x. Relative depths round to 1, 1, 2, 0 and 2
+        # copies of the lengths without their trailing overlap:
+        #   A 90*1 + B 70*1 + C 60*2 + D 40*0 + R 30*2
+        assert m.median_depth == 20.0
+        assert m.estimated_sequence_length == 90 + 70 + 120 + 0 + 60
+
+    def test_quartiles_interpolate_like_bandage(self, four_contig_graph):
+        m = compute_metrics(four_contig_graph)
+        # Sorted [100, 200, 300, 400]: the quartile indices are 0.75 and 2.25,
+        # so the values lie between two contigs rather than on one.
+        assert m.q1_length == 175
+        assert m.q3_length == 325
+
+    def test_a_graph_without_links(self, four_contig_graph):
+        m = compute_metrics(four_contig_graph)
+        assert m.overlap_min is None and m.overlap_max is None
+        assert m.total_length_no_overlaps == m.total_length == 1000
+        # Every end is a dead end, which is the 100% case.
+        assert m.dead_end_percent == pytest.approx(100.0)
+        # Each contig is its own component, so the largest is the largest contig.
+        assert m.largest_component_length == 400
+        assert m.orphaned_length == 1000
+        assert m.orphaned_percent == pytest.approx(100.0)
+        # No depths anywhere, so there is nothing to estimate from.
+        assert m.estimated_sequence_length is None
+
+    def test_empty_graph(self):
+        m = compute_metrics(AssemblyGraph())
+        assert m.overlap_min is None and m.overlap_max is None
+        assert m.total_length_no_overlaps == 0
+        assert m.dead_end_percent == 0.0
+        assert m.largest_component_length == 0
+        assert m.largest_component_percent is None
+        assert m.orphaned_length == 0 and m.orphaned_percent is None
+        assert m.q1_length == 0 and m.q3_length == 0
+        assert m.estimated_sequence_length is None
+
+    def test_single_segment(self):
+        graph = AssemblyGraph()
+        graph.add_segment(Segment("only", "A" * 500, depth=12.0))
+        m = compute_metrics(graph)
+        assert m.q1_length == m.q3_length == m.median_contig == 500
+        assert m.largest_component_length == 500
+        assert m.largest_component_percent == pytest.approx(100.0)
+        assert m.orphaned_length == 500
+        assert m.dead_end_percent == pytest.approx(100.0)
+        # One segment is its own median depth, so it is one copy of itself.
+        assert m.estimated_sequence_length == 500
+
+    def test_zero_median_depth_leaves_the_estimate_unavailable(self):
+        graph = AssemblyGraph()
+        for i in range(3):
+            graph.add_segment(Segment(f"s{i}", "A" * 100, depth=0.0))
+        m = compute_metrics(graph)
+        assert m.median_depth == 0.0
+        # Dividing by it would be meaningless, so Bandage calls this unavailable.
+        assert m.estimated_sequence_length is None
+
+    def test_collapsed_repeats_are_counted_once_per_copy(self):
+        graph = AssemblyGraph()
+        graph.add_segment(Segment("single", "A" * 1000, depth=10.0))
+        graph.add_segment(Segment("triple", "C" * 300, depth=31.0))  # 3.1x -> 3 copies
+        graph.add_segment(Segment("faint", "G" * 200, depth=2.0))  # 0.2x -> 0 copies
+        m = compute_metrics(graph)
+        assert m.median_depth == 10.0
+        assert m.estimated_sequence_length == 1000 + 900 + 0
+
+    def test_a_segment_shorter_than_its_overlap_floors_at_zero(self):
+        graph = AssemblyGraph()
+        graph.add_segment(Segment("long", "A" * 500))
+        graph.add_segment(Segment("stub", "C" * 20))
+        graph.add_link(Link("long", "+", "stub", "+", 55, "55M"))
+        m = compute_metrics(graph)
+        # 500 - 55 for the long one; the stub cannot go negative.
+        assert m.total_length_no_overlaps == 445
+        assert (m.overlap_min, m.overlap_max) == (55, 55)
+
+    def test_overlap_range_reports_both_ends(self):
+        graph = AssemblyGraph()
+        for name in ("a", "b", "c"):
+            graph.add_segment(Segment(name, "A" * 300))
+        graph.add_link(Link("a", "+", "b", "+", 21, "21M"))
+        graph.add_link(Link("b", "+", "c", "+", 77, "77M"))
+        m = compute_metrics(graph)
+        assert (m.overlap_min, m.overlap_max) == (21, 77)
+        # Each segment gives up its own widest overlap: 21, 77 and 77.
+        assert m.total_length_no_overlaps == 279 + 223 + 223
+
+    def test_filtering_follows_the_induced_subgraph(self):
+        # big -- tiny -- big, as in TestFilteredTopology: dropping the connector
+        # leaves two orphans and no links at all.
+        graph = AssemblyGraph("chain")
+        graph.add_segment(Segment("big1", "A" * 5000))
+        graph.add_segment(Segment("tiny", "C" * 100))
+        graph.add_segment(Segment("big2", "G" * 5000))
+        graph.add_link(Link("big1", "+", "tiny", "+", 15, "15M"))
+        graph.add_link(Link("tiny", "+", "big2", "+", 15, "15M"))
+
+        whole = compute_metrics(graph)
+        assert (whole.overlap_min, whole.overlap_max) == (15, 15)
+        assert whole.largest_component_length == 10_100
+        assert whole.orphaned_length == 0
+
+        filtered = compute_metrics(graph, min_length=1000)
+        assert filtered.overlap_min is None and filtered.overlap_max is None
+        assert filtered.total_length_no_overlaps == 10_000
+        assert filtered.largest_component_length == 5000
+        assert filtered.orphaned_length == 10_000
+        assert filtered.dead_end_percent == pytest.approx(100.0)

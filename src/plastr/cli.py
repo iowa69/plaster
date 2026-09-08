@@ -100,7 +100,10 @@ def _print_metrics(project: Project) -> None:
         ("contigs", f"{m.num_contigs:,}"),
         ("contigs >= 1 kb", f"{m.num_contigs_ge_1kb:,}"),
         ("total length", _human(m.total_length)),
+        ("total length (no ovl)", _human(m.total_length_no_overlaps)),
         ("largest contig", _human(m.largest_contig)),
+        ("lower quartile", _human(m.q1_length)),
+        ("upper quartile", _human(m.q3_length)),
         ("N50", _human(m.n50)),
         ("L50", f"{m.l50:,}"),
         ("N75", _human(m.n75)),
@@ -114,10 +117,26 @@ def _print_metrics(project: Project) -> None:
         rows.append(("median depth", f"{m.median_depth:.1f} x"))
     if m.mean_depth is not None:
         rows.append(("mean depth", f"{m.mean_depth:.1f} x"))
+    if m.estimated_sequence_length is not None:
+        rows.append(("estimated sequence", _human(m.estimated_sequence_length)))
+    if m.overlap_min is None:
+        overlaps = "-"
+    elif m.overlap_min == m.overlap_max:
+        overlaps = f"{m.overlap_min:,} bp"
+    else:
+        overlaps = f"{m.overlap_min:,} to {m.overlap_max:,} bp"
     rows += [
         ("links", f"{m.num_links:,}"),
+        ("edge overlap range", overlaps),
         ("components", f"{m.num_components:,}"),
+        ("largest component", _human(m.largest_component_length) + (
+            f" ({m.largest_component_percent:.1f} %)"
+            if m.largest_component_percent is not None
+            else ""
+        )),
+        ("orphaned length", _human(m.orphaned_length)),
         ("dead ends", f"{m.dead_ends:,}"),
+        ("percentage dead ends", f"{m.dead_end_percent:.2f} %"),
         ("circular contigs", f"{m.num_circular:,}"),
     ]
     print("\n  " + _bold("Assembly statistics"))
@@ -292,6 +311,8 @@ def cmd_qc(args) -> int:
             reference_report=project.reference_report,
             source_path=project.source_path,
             reference_path=project.reference_path,
+            graph=project.graph,
+            min_contig=project.min_contig,
         )
         # The report always contains an en dash and declares UTF-8, so it must
         # be written as UTF-8 whatever the host locale says.
@@ -563,6 +584,8 @@ def cmd_compare(args) -> int:
             source_path=first.source_path,
             reference_path=args.reference,
             subject=first_label,
+            graph=first.graph,
+            min_contig=first.min_contig,
         )
         with open(args.html, "w", encoding="utf-8") as fh:
             fh.write(html)
