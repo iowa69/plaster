@@ -90,17 +90,113 @@
           </span>
           <div class="btn-row"><button class="btn btn-sm" id="paths-go">Attach paths</button></div>
         </details>
+      </div>
+    </section>
 
-        <details class="sub">
-          <summary>Level of detail</summary>
-          <label class="field"><span class="field-label">Min segment length (bp)</span>
-            <input type="number" id="lod-minlen" value="0" min="0" step="100"></label>
-          <label class="field"><span class="field-label">Max nodes fetched</span>
-            <input type="number" id="lod-maxnodes" value="15000" min="10" step="500"></label>
+    <!-- Graph scope: which part of the assembly is drawn at all -->
+    <section class="panel" id="panel-scope">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Graph scope</button></h2>
+      <div class="panel-body">
+        <label class="field"><span class="field-label">Draw</span>
+          <select id="scope-mode">
+            <option value="entire" selected>the entire graph</option>
+            <option value="around">nodes around a selection</option>
+            <option value="depth">nodes within a depth range</option>
+            <option value="component">one connected component</option>
+          </select>
+        </label>
+
+        <div class="scope-args" id="scope-args-around" hidden>
+          <label class="field"><span class="field-label">Node names</span>
+            <input type="text" id="scope-nodes" placeholder="12, 47, contig_3" spellcheck="false"
+                   autocomplete="off"></label>
+          <div class="grid-2">
+            <label class="field"><span class="field-label">Distance (steps)</span>
+              <input type="number" id="scope-distance" value="0" min="0" max="100" step="1"></label>
+            <div class="field">
+              <span class="field-label" id="scope-match-label">Name match</span>
+              <div class="seg-toggle" role="radiogroup" aria-labelledby="scope-match-label">
+                <label class="seg-opt"><input type="radio" name="scope-match" value="exact" checked><span>Exact</span></label>
+                <label class="seg-opt"><input type="radio" name="scope-match" value="partial"><span>Partial</span></label>
+              </div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-sm" id="scope-from-sel">Use current selection</button>
+          </div>
+        </div>
+
+        <div class="scope-args" id="scope-args-depth" hidden>
+          <div class="grid-2">
+            <label class="field"><span class="field-label">Min depth</span>
+              <input type="number" id="scope-depth-min" placeholder="none" min="0" step="0.1"></label>
+            <label class="field"><span class="field-label">Max depth</span>
+              <input type="number" id="scope-depth-max" placeholder="none" min="0" step="0.1"></label>
+          </div>
+        </div>
+
+        <div class="scope-args" id="scope-args-component" hidden>
           <label class="field"><span class="field-label">Component</span>
             <select id="lod-component"><option value="">all components</option></select></label>
-          <div class="btn-row"><button class="btn btn-sm" id="lod-apply">Apply</button></div>
-        </details>
+        </div>
+
+        <div class="grid-2">
+          <label class="field"><span class="field-label">Min segment length (bp)</span>
+            <input type="number" id="lod-minlen" value="0" min="0" step="100"></label>
+          <label class="field"><span class="field-label">Max nodes drawn</span>
+            <input type="number" id="lod-maxnodes" value="15000" min="10" step="500"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary btn-sm" id="lod-apply">Redraw graph</button>
+          <button class="btn btn-sm" id="scope-reset">Whole graph</button>
+        </div>
+        <div id="scope-report" class="results scope-report" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- Find nodes -->
+    <section class="panel" id="panel-find">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Find nodes</button></h2>
+      <div class="panel-body">
+        <div class="field">
+          <label class="field-label" for="find-input">Segment name <kbd class="key-hint">/</kbd></label>
+          <div class="field-row">
+            <input type="search" id="find-input" placeholder="name, or part of one" spellcheck="false"
+                   autocomplete="off" aria-describedby="find-help">
+            <button class="btn btn-sm btn-primary" id="find-go">Find</button>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="find-exact"> Whole name only</label>
+        <p class="muted small" id="find-help">Every match is selected and framed in the view.
+          Separate several names with commas.</p>
+        <div id="find-results" class="results" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- Selection -->
+    <section class="panel" id="panel-selection">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Selection</button></h2>
+      <div class="panel-body">
+        <div id="selection-stats" class="stat-row" aria-live="polite"></div>
+        <div class="btn-row">
+          <button class="btn btn-sm" id="sel-frame" title="Zoom the view onto the selection">Frame</button>
+          <button class="btn btn-sm" id="sel-copy" title="Copy the selected sequences as FASTA">Copy FASTA</button>
+          <button class="btn btn-sm" id="sel-fasta" title="Save the selected sequences as a FASTA file">Save FASTA</button>
+          <button class="btn btn-sm" id="sel-clear">Clear</button>
+        </div>
+        <div id="selection-detail" class="results"></div>
+      </div>
+    </section>
+
+    <!-- Node labels -->
+    <section class="panel" id="panel-labels">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Node labels</button></h2>
+      <div class="panel-body">
+        <label class="check"><input type="checkbox" id="lab-name"> Name</label>
+        <label class="check"><input type="checkbox" id="lab-length"> Length</label>
+        <label class="check"><input type="checkbox" id="lab-depth"> Read depth</label>
+        <p class="muted small">A label is drawn only where the node is long enough on screen
+          to hold it — zoom in if one is missing.</p>
       </div>
     </section>
 
@@ -122,14 +218,13 @@
           </select>
         </label>
         <div id="colour-legend" class="legend-block" aria-live="polite"></div>
-        <label class="field"><span class="field-label">Width scale <output id="width-scale-out">1.0</output></span>
-          <input type="range" id="width-scale" min="0.2" max="4" step="0.1" value="1"></label>
+        <label class="field"><span class="field-label">Width scale <output id="width-scale-out">1.0</output>&#215;</span>
+          <input type="range" id="width-scale" aria-label="Width scale, a multiplier on the node width in Settings" min="0.2" max="4" step="0.1" value="1"></label>
         <label class="check"><input type="checkbox" id="opt-depth-width" checked> Scale width by depth</label>
         <label class="check"><input type="checkbox" id="opt-arrows"> Show direction arrows</label>
-        <label class="check"><input type="checkbox" id="opt-labels"> Show labels when zoomed</label>
         <label class="check"><input type="checkbox" id="opt-links" checked> Draw links</label>
         <label class="field"><span class="field-label">Node length <output id="size-scale-out">1.0</output></span>
-          <input type="range" id="size-scale" min="0.2" max="6" step="0.1" value="1.0"></label>
+          <input type="range" id="size-scale" aria-label="Node length scale" min="0.2" max="6" step="0.1" value="1.0"></label>
       </div>
     </section>
 
@@ -280,6 +375,31 @@
       </div>
     </section>
 
+    <!-- Settings -->
+    <section class="panel collapsed" id="panel-settings">
+      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="false"><span class="chev" aria-hidden="true"></span>Settings</button></h2>
+      <div class="panel-body">
+        <p class="muted small">Drawing tunables. They apply immediately and are remembered in this browser.</p>
+        <label class="field"><span class="field-label">Average node width <output id="set-nodewidth-out">5.0</output></span>
+          <input type="range" id="set-nodewidth" aria-label="Average node width, in world units" min="1" max="20" step="0.5" value="5"></label>
+        <label class="field"><span class="field-label">Depth power <output id="set-depthpower-out">0.50</output></span>
+          <input type="range" id="set-depthpower" aria-label="Depth power" min="0" max="1" step="0.05" value="0.5"></label>
+        <label class="field"><span class="field-label">Depth effect on width <output id="set-deptheffect-out">0.50</output></span>
+          <input type="range" id="set-deptheffect" aria-label="Depth effect on width" min="0" max="1" step="0.05" value="0.5"></label>
+        <label class="field"><span class="field-label">Edge width <output id="set-edgewidth-out">1.1</output></span>
+          <input type="range" id="set-edgewidth" aria-label="Edge width" min="0.2" max="6" step="0.1" value="1.1"></label>
+        <label class="field"><span class="field-label">Label text size <output id="set-textsize-out">11</output> px</span>
+          <input type="range" id="set-textsize" aria-label="Label text size, in pixels" min="7" max="24" step="1" value="11"></label>
+        <label class="check"><input type="checkbox" id="set-autolength" checked>
+          Calibrate node length per graph</label>
+        <label class="field"><span class="field-label">Node length per megabase</span>
+          <input type="number" id="set-permb" value="1000" min="1" max="1000000" step="100"></label>
+        <label class="check"><input type="checkbox" id="set-outline" checked> Draw node outlines</label>
+        <label class="check"><input type="checkbox" id="set-antialias" checked> Antialiasing</label>
+        <div class="btn-row"><button class="btn btn-sm" id="set-reset">Restore defaults</button></div>
+      </div>
+    </section>
+
     <!-- Export -->
     <section class="panel collapsed" id="panel-export">
       <h2 class="panel-head"><button class="panel-toggle" aria-expanded="false"><span class="chev" aria-hidden="true"></span>Export</button></h2>
@@ -307,14 +427,6 @@
           <button class="btn btn-sm" id="session-save">Save layout to session</button>
           <button class="btn btn-sm" id="session-load">Restore</button>
         </div>
-      </div>
-    </section>
-
-    <!-- Selection -->
-    <section class="panel" id="panel-selection">
-      <h2 class="panel-head"><button class="panel-toggle" aria-expanded="true"><span class="chev" aria-hidden="true"></span>Selection</button></h2>
-      <div class="panel-body">
-        <div id="selection-detail" class="results"><p class="muted">Click a segment on the canvas.</p></div>
       </div>
     </section>
 
@@ -356,7 +468,7 @@
       <label class="check"><input type="radio" name="rr-scope" value="all" checked> Whole graph</label>
       <label class="check"><input type="radio" name="rr-scope" value="selection"> Selection only</label>
       <label class="check"><input type="radio" name="rr-scope" value="component"> One component</label>
-      <select id="rr-component" class="inline-select"><option value="">—</option></select>
+      <select id="rr-component" aria-label="Component to rearrange" class="inline-select"><option value="">—</option></select>
     </fieldset>
     <fieldset class="fs">
       <legend>Mode</legend>
@@ -368,11 +480,11 @@
     <details class="sub">
       <summary>Physics</summary>
       <label class="field"><span class="field-label">Repulsion <output id="rr-rep-out">0.010</output></span>
-        <input type="range" id="rr-repulsion" min="0.002" max="0.2" step="0.002" value="0.01"></label>
+        <input type="range" id="rr-repulsion" aria-label="Repulsion" min="0.002" max="0.2" step="0.002" value="0.01"></label>
       <label class="field"><span class="field-label">Link strength <output id="rr-link-out">1.80</output></span>
-        <input type="range" id="rr-linkstr" min="0.1" max="4" step="0.05" value="1.8"></label>
+        <input type="range" id="rr-linkstr" aria-label="Link strength" min="0.1" max="4" step="0.05" value="1.8"></label>
       <label class="field"><span class="field-label">Gravity <output id="rr-grav-out">0.020</output></span>
-        <input type="range" id="rr-gravity" min="0" max="0.4" step="0.005" value="0.02"></label>
+        <input type="range" id="rr-gravity" aria-label="Gravity" min="0" max="0.4" step="0.005" value="0.02"></label>
       <label class="field"><span class="field-label">Max iterations</span>
         <input type="number" id="rr-iters" value="600" min="30" max="20000" step="50"></label>
     </details>
@@ -394,7 +506,7 @@
     </div>
     <div class="browse-bar">
       <button class="btn btn-sm" id="browse-up" title="Parent directory">↑</button>
-      <input type="text" id="browse-path" spellcheck="false" placeholder="/">
+      <input type="text" id="browse-path" aria-label="Directory path" spellcheck="false" placeholder="/">
       <button class="btn btn-sm" id="browse-go">Go</button>
     </div>
     <ul id="browse-list" class="browse-list"></ul>
@@ -423,10 +535,15 @@
           <dt><kbd>F</kbd></dt><dd>Fit graph to view</dd>
           <dt><kbd>Del</kbd> / <kbd>Backspace</kbd></dt><dd>Delete the selected segments</dd>
           <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo the last operation</dd>
-          <dt><kbd>/</kbd></dt><dd>Focus the search box</dd>
+          <dt><kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>F</kbd></dt><dd>Find nodes by name</dd>
+          <dt><kbd>Enter</kbd> in Find</dt><dd>Select the matches and frame them</dd>
           <dt><kbd>Esc</kbd></dt><dd>Clear selection / close dialogs</dd>
           <dt><kbd>?</kbd></dt><dd>This help</dd>
           <dt><kbd>A</kbd></dt><dd>Select all visible segments</dd>
+          <dt><kbd>C</kbd></dt><dd>Copy the selected sequences as FASTA</dd>
+          <dt><kbd>Tab</kbd></dt><dd>Move focus; the canvas takes focus like any control</dd>
+          <dt>Arrow keys</dt><dd>Pan the focused canvas (<kbd>Shift</kbd> for larger steps)</dd>
+          <dt><kbd>+</kbd> / <kbd>-</kbd></dt><dd>Zoom the focused canvas</dd>
           <dt><kbd>Space</kbd>+drag</dt><dd>Pan regardless of what is under the cursor</dd>
         </dl>
       </div>
@@ -442,10 +559,11 @@
           <dt>Double-click segment</dt><dd>Centre the view on it</dd>
         </dl>
         <h4>Notes</h4>
-        <p class="muted small">Each segment is drawn as a polyline whose length grows with the square
-        root of its sequence length, and whose thickness follows read depth — the same convention
-        Bandage uses. Links attach to the correct end of each polyline according to their
-        orientation signs.</p>
+        <p class="muted small">Each segment is drawn as a polyline whose length is proportional to
+        its sequence length and whose thickness follows read depth — the same convention Bandage
+        uses. The bases-to-pixels scale is calibrated per graph, so a phage and a chromosome are
+        both legible; Settings can pin it instead. Links attach to the correct end of each polyline
+        according to their orientation signs.</p>
       </div>
     </div>
   </div>

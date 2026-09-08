@@ -19,6 +19,7 @@ from plastr.core.model import (
     depth_from_name,
     depth_from_tags,
     length_from_name,
+    scope_segments,
 )
 
 from conftest import TINY
@@ -489,3 +490,154 @@ class TestDepthHelpers:
         assert length_from_name(name) == 5000
         assert depth_from_name("plain_name") is None
         assert length_from_name("plain_name") is None
+
+
+# ---------------------------------------------------------------------------
+# Graph scope
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def spades_graph() -> AssemblyGraph:
+    """Names of the shape people paste into Bandage's 'around nodes' box."""
+    graph = AssemblyGraph(name="spades")
+    for name in ("NODE_1_length_500", "NODE_12_length_90", "NODE_2_length_70"):
+        graph.add_segment(Segment(name=name, sequence="A" * 10))
+    return graph
+
+
+@pytest.fixture
+def scattered_graph() -> AssemblyGraph:
+    """Long segments that are not neighbours: A(1000)-b(10)-C(900), D(800) apart."""
+    graph = AssemblyGraph(name="scattered")
+    for name, size in (("A", 1000), ("b", 10), ("C", 900), ("D", 800)):
+        graph.add_segment(Segment(name=name, sequence="A" * size))
+    assert graph.add_link(Link("A", "+", "b", "+"))
+    assert graph.add_link(Link("b", "+", "C", "+"))
+    return graph
+
+
+class TestMatchNames:
+    def test_exact_match(self, tiny_graph):
+        assert tiny_graph.match_names(["A", "C"], exact=True) == (["A", "C"], [])
+
+    def test_a_trailing_sign_is_optional(self, tiny_graph):
+        # Bandage names each strand separately, so people paste what they see.
+        assert tiny_graph.match_names(["B+", "C-"], exact=True) == (["B", "C"], [])
+
+    def test_exact_match_does_not_take_a_substring(self, spades_graph):
+        assert spades_graph.match_names(["NODE_1"], exact=True) == (
+            [], ["NODE_1"],
+        )
+
+    def test_partial_match_takes_every_name_containing_the_query(self, spades_graph):
+        matched, missing = spades_graph.match_names(["NODE_1"], exact=False)
+        assert matched == ["NODE_1_length_500", "NODE_12_length_90"]
+        assert missing == []
+
+    def test_partial_match_deduplicates_overlapping_queries(self, spades_graph):
+        matched, _ = spades_graph.match_names(["NODE_1", "length_500"], exact=False)
+        assert matched == ["NODE_1_length_500", "NODE_12_length_90"]
+
+    def test_queries_that_match_nothing_come_back_named(self, tiny_graph):
+        assert tiny_graph.match_names(["A", "Z", ""], exact=True) == (["A"], ["Z"])
+
+
+class TestWithinDistance:
+    def test_distance_zero_is_the_seeds_alone(self, tiny_graph):
+        assert tiny_graph.within_distance(["A"], 0) == {"A"}
+
+    def test_each_step_adds_a_ring(self, tiny_graph):
+        assert tiny_graph.within_distance(["A"], 1) == {"A", "B"}
+        assert tiny_graph.within_distance(["A"], 2) == {"A", "B", "C"}
+
+    def test_it_stops_at_the_edge_of_the_component(self, tiny_graph):
+        assert tiny_graph.within_distance(["A"], 99) == {"A", "B", "C"}
+
+    def test_an_excluded_segment_cannot_be_stepped_through(self, tiny_graph):
+        # B is out of the pool, so C stays out of reach even at distance 2.
+        assert tiny_graph.within_distance(["A"], 2, allowed={"A", "C"}) == {"A"}
+
+    def test_unknown_seeds_are_ignored(self, tiny_graph):
+        assert tiny_graph.within_distance(["A", "nope"], 0) == {"A"}
+
+
+class TestDepthRange:
+    def test_both_ends(self, tiny_graph):
+        assert tiny_graph.in_depth_range(20, 30) == ["B", "C"]
+
+    def test_either_end_may_be_open(self, tiny_graph):
+        assert tiny_graph.in_depth_range(minimum=20) == ["B", "C", "R"]
+        assert tiny_graph.in_depth_range(maximum=20) == ["A", "B", "D"]
+        assert tiny_graph.in_depth_range() == list(TINY.names)
+
+    def test_a_segment_of_unknown_depth_is_in_no_range(self, tiny_graph):
+        tiny_graph.add_segment(Segment(name="X", sequence="ACGT"), replace=True)
+        assert "X" not in tiny_graph.in_depth_range()
+        assert "X" not in tiny_graph.in_depth_range(0, 1e9)
+
+
+class TestScopeSegments:
+    def test_entire_graph_by_default(self, tiny_graph):
+        picked = scope_segments(tiny_graph)
+        assert picked.names == sorted(TINY.names)
+        assert picked.total == 5
+        assert picked.dropped == 0
+        assert picked.rule == "none"
+
+    def test_min_length_and_component_narrow_the_pool(self, tiny_graph):
+        assert scope_segments(tiny_graph, min_length=61).names == ["A", "B"]
+        assert scope_segments(tiny_graph, "component", component=1).names == ["D"]
+
+    def test_around_expands_within_the_pool_only(self, tiny_graph):
+        picked = scope_segments(
+            tiny_graph, "around", names=["A"], exact=True, distance=2, min_length=70
+        )
+        # C is 60 bp: excluded, and with it the only route onward from B.
+        assert picked.names == ["A", "B"]
+        assert picked.seeds == ["A"]
+
+    def test_around_reports_what_it_could_not_find(self, tiny_graph):
+        picked = scope_segments(tiny_graph, "around", names=["A", "Z"], exact=True)
+        assert picked.names == ["A"]
+        assert picked.missing == ["Z"]
+
+    def test_depth_scope_ignores_distance(self, tiny_graph):
+        # Bandage zeroes the node distance for a depth range; only the depths
+        # themselves decide what is shown.
+        picked = scope_segments(tiny_graph, "depth", min_depth=25, distance=5)
+        assert picked.names == ["C", "R"]
+
+    def test_truncation_grows_outward_instead_of_taking_the_longest(self, scattered_graph):
+        picked = scope_segments(scattered_graph, max_nodes=2)
+        # A and C are the two longest and share no link: returning them draws
+        # two lone sticks. Growing from the biggest keeps the join visible.
+        assert picked.names == ["A", "b"]
+        assert picked.total == 4
+        assert picked.dropped == 2
+        assert "breadth-first" in picked.rule
+
+    def test_truncation_finishes_a_blob_before_starting_another(self, scattered_graph):
+        assert scope_segments(scattered_graph, max_nodes=3).names == ["A", "C", "b"]
+        whole = scope_segments(scattered_graph, max_nodes=4)
+        assert whole.names == ["A", "C", "D", "b"]
+        assert whole.rule == "none"
+
+    def test_truncation_keeps_the_seed_and_its_neighbourhood(self, tiny_graph):
+        picked = scope_segments(
+            tiny_graph, "around", names=["C"], exact=True, distance=2, max_nodes=2
+        )
+        assert picked.names == ["B", "C"]
+        assert picked.dropped == 1
+
+    def test_truncation_keeps_every_named_seed_before_any_neighbour(self, scattered_graph):
+        # A's neighbour b must not crowd out Z, which the caller asked for by name.
+        picked = scope_segments(
+            scattered_graph, "around", names=["A", "D"], exact=True,
+            distance=2, max_nodes=2,
+        )
+        assert picked.names == ["A", "D"]
+
+    def test_an_unknown_scope_is_an_error(self, tiny_graph):
+        with pytest.raises(GraphOperationError, match="unknown graph scope"):
+            scope_segments(tiny_graph, "sideways")

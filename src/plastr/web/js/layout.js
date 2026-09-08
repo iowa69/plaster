@@ -164,6 +164,35 @@ class QuadTree {
   }
 }
 
+/**
+ * Shelf-pack boxes into rows, largest first, targeting an aspect ratio.
+ *
+ * Writes `x`/`y` (top-left) into each box and returns the packed extent. Used
+ * wherever whole components have to be placed: a uniform grid sized by the
+ * largest component gives a two-segment plasmid the same cell as a
+ * three-hundred-segment chromosome, which on a calibrated scale is thousands of
+ * empty world units between neighbours.
+ */
+function shelfPack(boxes, aspect) {
+  if (!boxes.length) return { w: 0, h: 0 };
+  boxes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+  let area = 0;
+  for (const b of boxes) area += b.w * b.h;
+  let rowWidth = Math.sqrt(area * (aspect || 1.4));
+  for (const b of boxes) if (b.w > rowWidth) rowWidth = b.w;
+
+  let cx = 0, cy = 0, rowH = 0, maxX = 0;
+  for (const b of boxes) {
+    if (cx > 0 && cx + b.w > rowWidth) { cx = 0; cy += rowH; rowH = 0; }
+    b.x = cx;
+    b.y = cy;
+    cx += b.w;
+    if (cx > maxX) maxX = cx;
+    if (b.h > rowH) rowH = b.h;
+  }
+  return { w: maxX, h: cy + rowH };
+}
+
 /* ====================================================================== */
 /*  Layout engine                                                          */
 /* ====================================================================== */
@@ -228,9 +257,18 @@ export const DEFAULT_PARAMS = Object.freeze({
   packAspect: 1.4,
   constraintPasses: 8,
   animFrames: 42,
-  componentPad: 90,
-  rankGap: 70,
-  rowGap: 48,
+  // The three constants below are world units, and world units now mean
+  // something fixed: the calibration puts the mean node at 40 and one polyline
+  // step at 20 whatever the assembly's size (GraphModel.calibrate). They were
+  // chosen against the old scale, where a bacterial contig came out ~5 units
+  // long and a 70-unit rank gap was fourteen contigs of empty space.
+  // `componentPad` is Bandage's own `componentSeparation` (settings.cpp:37);
+  // the other two are one polyline step and a little under two of them, which
+  // leaves a rearranged graph a few times looser than the force layout instead
+  // of an order of magnitude looser.
+  componentPad: 50,
+  rankGap: 20,
+  rowGap: 36,
 });
 
 export const LAYOUT_MODES = ['force', 'linear', 'circular', 'grid'];
@@ -348,41 +386,19 @@ export class LayoutEngine {
 
     const pad = Math.max(this.unit * 2.5, this.params.componentPad || 0);
     const boxes = [];
-    let totalArea = 0;
     for (let c = 0; c < nComp; c++) {
       if (!Number.isFinite(minX[c])) continue;
-      const w = maxX[c] - minX[c] + pad;
-      const h = maxY[c] - minY[c] + pad;
-      boxes.push({ c, w, h });
-      totalArea += w * h;
+      boxes.push({ c, w: maxX[c] - minX[c] + pad, h: maxY[c] - minY[c] + pad });
     }
     if (boxes.length < 2) return;
-    boxes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-
-    // Target a row width that gives roughly the requested aspect ratio, but
-    // never narrower than the widest component.
-    const aspect = this.params.packAspect || 1.4;
-    let rowWidth = Math.sqrt(totalArea * aspect);
-    for (const b of boxes) if (b.w > rowWidth) rowWidth = b.w;
-
-    let cx = 0;
-    let cy = 0;
-    let rowH = 0;
-    const place = new Float64Array(nComp * 2);
-    for (const b of boxes) {
-      if (cx > 0 && cx + b.w > rowWidth) { cx = 0; cy += rowH; rowH = 0; }
-      place[b.c * 2] = cx;
-      place[b.c * 2 + 1] = cy;
-      cx += b.w;
-      if (b.h > rowH) rowH = b.h;
-    }
+    shelfPack(boxes, this.params.packAspect);
 
     // Translate each component from where it sits to its slot.
     const dx = new Float64Array(nComp);
     const dy = new Float64Array(nComp);
     for (const b of boxes) {
-      dx[b.c] = place[b.c * 2] - minX[b.c] + pad / 2;
-      dy[b.c] = place[b.c * 2 + 1] - minY[b.c] + pad / 2;
+      dx[b.c] = b.x - minX[b.c] + pad / 2;
+      dy[b.c] = b.y - minY[b.c] + pad / 2;
     }
     for (let i = 0; i < nParticles; i++) {
       const c = this._compOfParticle(i);
@@ -395,7 +411,8 @@ export class LayoutEngine {
    * Prepare a run.
    * @param {string} mode one of LAYOUT_MODES
    * @param {Int32Array|null} subset mobile segment indices (null = everything)
-   * @param {object} params
+   * @param {object} params  DEFAULT_PARAMS overrides, plus an optional
+   *   `pinned` array of particle indices to hold still for the whole run
    */
   begin(mode, subset, params) {
     if (!this.ready) return false;
@@ -417,6 +434,22 @@ export class LayoutEngine {
     for (const s of segList) {
       const p0 = this.segP0[s], k = this.segK[s];
       for (let i = 0; i < k; i++) this.mobile[p0 + i] = 1;
+    }
+    // Pinned particles are held still even though their segment is mobile. This
+    // is what lets a dragged vertex stay under the pointer while the constraint
+    // solver relaxes the rest of its polyline -- and the graph -- around it.
+    const pinned = this.params.pinned;
+    // Component packing translates whole components rigidly, immobile
+    // particles included, so it would drag a pinned vertex out from under the
+    // pointer. A run with pins leaves the components where they are.
+    this.packing = !(pinned && pinned.length);
+    if (!this.packing) {
+      for (let i = 0; i < pinned.length; i++) {
+        // `| 0` alone would turn a caller's undefined into particle 0 and
+        // silently freeze the first vertex of the graph.
+        const p = Number(pinned[i]);
+        if (Number.isInteger(p) && p >= 0 && p < this.nParticles) this.mobile[p] = 0;
+      }
     }
     this.segList = segList;
 
@@ -649,7 +682,7 @@ export class LayoutEngine {
     // Every few steps rather than every step: packing is a rigid translation so
     // it never disturbs a component's shape, but doing it constantly makes the
     // components visibly twitch while the sim is still moving them.
-    if (this._nComp > 1 && (this.iter % 4) === 0) this._packComponents();
+    if (this.packing && this._nComp > 1 && (this.iter % 4) === 0) this._packComponents();
 
     /* --- 7. cool ------------------------------------------------------- */
     this.iter++;
@@ -661,7 +694,7 @@ export class LayoutEngine {
     if (moved < unit * 0.0025) this.settledFor++; else this.settledFor = 0;
     const done = this.iter >= this.maxIter || this.settledFor > 24;
     if (done) {
-      if (this._nComp > 1) this._packComponents();
+      if (this.packing && this._nComp > 1) this._packComponents();
       this.running = false;
     }
     return { done, iter: this.iter, alpha: this.alpha };
@@ -820,6 +853,7 @@ export class LayoutEngine {
   _layoutLinear(segList, adj, comps, tx, ty) {
     const P = this.params;
     let yCursor = 0;
+    let prevHalf = null;
     for (const comp of comps) {
       const { rank, flip } = this._traverse(comp, adj, segList);
       // Normalise ranks to start at 0.
@@ -843,10 +877,15 @@ export class LayoutEngine {
         colX[r] = x;
         x += w + P.rankGap;
       }
+      // Measure the row stack before placing anything: the gap between two
+      // components is half of this one plus half of the *next* one, and
+      // advancing by this one's height twice let a tall fan of short contigs
+      // land straight on top of the thin chain above it.
       let height = 0;
+      for (let r = 0; r < nRanks; r++) height = Math.max(height, rows[r].length * P.rowGap);
+      yCursor += (prevHalf === null ? 0 : prevHalf + P.componentPad) + height / 2;
       for (let r = 0; r < nRanks; r++) {
         const list = rows[r];
-        height = Math.max(height, list.length * P.rowGap);
         list.sort((a, b) => this.segLen[segList[b]] - this.segLen[segList[a]]);
         for (let i = 0; i < list.length; i++) {
           const u = list[i];
@@ -857,28 +896,30 @@ export class LayoutEngine {
           this._emitLine(seg, px0, py0, flip.get(u), tx, ty);
         }
       }
-      yCursor += height / 2 + P.componentPad + height / 2;
+      prevHalf = height / 2;
     }
   }
 
   _layoutCircular(segList, adj, comps, tx, ty) {
     const P = this.params;
-    const gap = Math.max(12, this.unit * (P.linkRestFrac !== undefined ? P.linkRestFrac : 0.25));
-    // Lay each component on its own circle, then pack the circles into a grid.
-    const circles = [];
-    for (const comp of comps) {
+    // The arc between consecutive nodes is a link, so it gets a link's ideal
+    // length. An absolute floor here used to keep a whole graph's circles
+    // apart by more than the nodes on them were long.
+    const gap = this.unit * (P.linkRestFrac !== undefined ? P.linkRestFrac : 0.25);
+    // Lay each component on its own circle, then pack the circles.
+    const circles = comps.map((comp) => {
       const { order, flip } = this._traverse(comp, adj, segList);
       let circumference = 0;
       for (const u of order) circumference += this.segLen[segList[u]] + gap;
-      const R = Math.max(40, circumference / (2 * Math.PI));
-      circles.push({ order, flip, R });
-    }
-    const cols = Math.max(1, Math.ceil(Math.sqrt(circles.length)));
-    let cell = 0;
-    for (const c of circles) cell = Math.max(cell, c.R * 2 + P.componentPad);
-    circles.forEach((c, ci) => {
-      const ox = (ci % cols) * cell;
-      const oy = Math.floor(ci / cols) * cell;
+      // One short node still needs an arc it can be read along.
+      const R = Math.max(this.unit, circumference / (2 * Math.PI));
+      const d = R * 2 + P.componentPad;
+      return { order, flip, R, w: d, h: d };
+    });
+    shelfPack(circles, P.packAspect);
+    circles.forEach((c) => {
+      const ox = c.x + c.w / 2;
+      const oy = c.y + c.h / 2;
       let angle = 0;
       const R = c.R;
       for (const u of c.order) {
@@ -916,16 +957,12 @@ export class LayoutEngine {
       if (!Number.isFinite(minX)) { minX = minY = 0; maxX = maxY = 1; }
       return { comp, minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
     });
-    boxes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-    const cols = Math.max(1, Math.ceil(Math.sqrt(boxes.length)));
-    let cw = 0, ch = 0;
-    for (const b of boxes) { cw = Math.max(cw, b.w); ch = Math.max(ch, b.h); }
-    cw += P.componentPad; ch += P.componentPad;
-    boxes.forEach((b, i) => {
-      const cx = (i % cols) * cw + cw / 2;
-      const cy = Math.floor(i / cols) * ch + ch / 2;
-      const dx = cx - (b.minX + b.maxX) / 2;
-      const dy = cy - (b.minY + b.maxY) / 2;
+    const pad = P.componentPad;
+    for (const b of boxes) { b.w += pad; b.h += pad; }
+    shelfPack(boxes, P.packAspect);
+    boxes.forEach((b) => {
+      const dx = b.x + b.w / 2 - (b.minX + b.maxX) / 2;
+      const dy = b.y + b.h / 2 - (b.minY + b.maxY) / 2;
       for (const u of b.comp) {
         const seg = segList[u];
         const p0 = this.segP0[seg], k = this.segK[seg];

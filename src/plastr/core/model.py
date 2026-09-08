@@ -340,6 +340,93 @@ class AssemblyGraph:
             return False
         return len(self._out.get((name, "-"), ())) == 1
 
+    # -- scope (which segments a view should show) --------------------------
+
+    def match_names(
+        self, queries: Iterable[str], exact: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """Resolve typed-in segment names, following Bandage.
+
+        Exact matching tolerates a trailing ``+``/``-`` because Bandage names
+        each strand separately and people paste what they see. Partial matching
+        takes every segment whose name *contains* the query, which is how one
+        pulls a whole ``NODE_12_length_...`` family out with ``NODE_12_``.
+
+        Returns ``(matched names in graph order, queries that matched nothing)``.
+        """
+        matched: dict[str, None] = {}
+        missing: list[str] = []
+        for raw in queries:
+            query = (raw or "").strip()
+            if not query:
+                continue
+            if exact:
+                if query in self.segments:
+                    hits = [query]
+                elif query[-1] in "+-" and query[:-1] in self.segments:
+                    hits = [query[:-1]]
+                else:
+                    hits = []
+            else:
+                hits = [name for name in self.segments if query in name]
+            if hits:
+                matched.update(dict.fromkeys(hits))
+            else:
+                missing.append(query)
+        return list(matched), missing
+
+    def within_distance(
+        self,
+        seeds: Iterable[str],
+        distance: int,
+        allowed: set[str] | None = None,
+    ) -> set[str]:
+        """The seeds plus every segment at most ``distance`` steps from one.
+
+        ``allowed`` walls the walk in: a segment outside it is neither returned
+        nor stepped through, so a length or component filter cannot be tunnelled
+        under by a two-step expansion.
+        """
+        frontier = {
+            n
+            for n in seeds
+            if n in self.segments and (allowed is None or n in allowed)
+        }
+        seen = set(frontier)
+        for _ in range(max(0, distance)):
+            nxt: set[str] = set()
+            for name in frontier:
+                for nb in self.neighbours(name):
+                    if nb in seen or (allowed is not None and nb not in allowed):
+                        continue
+                    nxt.add(nb)
+            if not nxt:
+                break
+            seen |= nxt
+            frontier = nxt
+        return seen
+
+    def in_depth_range(
+        self, minimum: float | None = None, maximum: float | None = None
+    ) -> list[str]:
+        """Segments whose depth lies in ``[minimum, maximum]``; either end may be open.
+
+        A segment of unknown depth is in no range at all -- it cannot be shown to
+        be, and letting it through would quietly widen the filter it was meant
+        to obey.
+        """
+        out = []
+        for name, seg in self.segments.items():
+            depth = seg.depth
+            if depth is None:
+                continue
+            if minimum is not None and depth < minimum:
+                continue
+            if maximum is not None and depth > maximum:
+                continue
+            out.append(name)
+        return out
+
     # -- traversal ----------------------------------------------------------
 
     def walk_sequence(self, steps: Sequence[tuple[str, str]]) -> str:
@@ -502,6 +589,132 @@ class AssemblyGraph:
             "dead_ends": self.dead_end_count(),
             "has_sequences": any(s.has_sequence for s in self.segments.values()),
         }
+
+
+# ---------------------------------------------------------------------------
+# Graph scope
+# ---------------------------------------------------------------------------
+
+#: The ways a view can be narrowed, spelled as Bandage's graph scope offers them.
+SCOPES = ("entire", "around", "depth", "component")
+
+#: Values for :attr:`Scope.rule`.
+NO_TRUNCATION = "none"
+BREADTH_FIRST = "breadth-first from the scope seeds"
+
+
+@dataclass(slots=True)
+class Scope:
+    """The answer to "which segments should this view contain?"."""
+
+    names: list[str]
+    #: How many were in scope before ``max_nodes`` was applied.
+    total: int
+    seeds: list[str]
+    #: Queries that matched no segment. Bandage warns about these by name.
+    missing: list[str]
+    rule: str = NO_TRUNCATION
+
+    @property
+    def dropped(self) -> int:
+        return self.total - len(self.names)
+
+
+def scope_segments(
+    graph: AssemblyGraph,
+    scope: str = "entire",
+    *,
+    names: Iterable[str] = (),
+    distance: int = 0,
+    exact: bool = True,
+    min_depth: float | None = None,
+    max_depth: float | None = None,
+    component: int | None = None,
+    min_length: int = 0,
+    max_nodes: int | None = None,
+    components: dict[str, int] | None = None,
+) -> Scope:
+    """Pick the segments a drawing should contain, as Bandage's graph scope does.
+
+    ``min_length`` and ``component`` narrow the pool the scope works *within*
+    rather than being applied to its result, so "everything two steps from node
+    5" never counts a step through a segment the caller already excluded.
+    ``distance`` is ignored outside the ``around`` scope, which is what Bandage
+    does with its node-distance setting.
+    """
+    if scope not in SCOPES:
+        raise GraphOperationError(
+            f"unknown graph scope {scope!r}; choose one of {', '.join(SCOPES)}"
+        )
+    if component is not None and components is None:
+        components = graph.component_map()
+    pool = {
+        name
+        for name, seg in graph.segments.items()
+        if seg.length >= min_length
+        and (component is None or (components or {}).get(name, 0) == component)
+    }
+
+    missing: list[str] = []
+    if scope == "around":
+        matched, missing = graph.match_names(names, exact)
+        seeds = [n for n in matched if n in pool]
+        keep = graph.within_distance(seeds, distance, pool)
+    elif scope == "depth":
+        keep = {n for n in graph.in_depth_range(min_depth, max_depth) if n in pool}
+        seeds = []
+    else:
+        keep = pool
+        seeds = []
+
+    total = len(keep)
+    if max_nodes is None or total <= max_nodes:
+        return Scope(sorted(keep), total, seeds, missing)
+    return Scope(
+        sorted(_grow(graph, seeds, keep, max_nodes)), total, seeds, missing, BREADTH_FIRST
+    )
+
+
+def _grow(
+    graph: AssemblyGraph, seeds: Iterable[str], allowed: set[str], limit: int
+) -> list[str]:
+    """Breadth-first from the seeds until ``limit`` segments are collected.
+
+    Keeping the *longest* segments instead is easy and useless: the longest
+    segments of a large assembly are rarely neighbours, so the drawing becomes a
+    field of unconnected sticks. Growing outward keeps whatever is returned
+    joined up. With no seeds (the scopes that name none) the largest segment
+    anchors the first blob, and each further blob starts from the largest
+    segment not yet reached, so the big structures still arrive first.
+    """
+    def biggest_first(name: str) -> tuple[int, str]:
+        return (-graph.segments[name].length, name)
+
+    # Every seed is queued at once. A name the caller typed outranks a neighbour
+    # of some other seed, so a tight cap must not spend the whole budget on the
+    # first seed's blob and drop a segment that was asked for by name.
+    queue: deque[str] = deque(
+        sorted((n for n in seeds if n in allowed), key=biggest_first)
+    )
+    starts = deque(sorted(allowed, key=biggest_first))
+    seen: set[str] = set(queue)
+    kept: list[str] = []
+    while len(kept) < limit:
+        if not queue:
+            while starts and starts[0] in seen:
+                starts.popleft()
+            if not starts:
+                break
+            start = starts.popleft()
+            seen.add(start)
+            queue.append(start)
+        name = queue.popleft()
+        kept.append(name)
+        for nb in sorted(graph.neighbours(name), key=biggest_first):
+            if nb in allowed and nb not in seen:
+                seen.add(nb)
+                queue.append(nb)
+    return kept
 
 
 def _discard(items: list | None, value) -> None:

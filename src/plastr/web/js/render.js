@@ -10,12 +10,15 @@
  * * Only segments whose bounding box intersects the viewport are drawn, and
  *   they are batched by (colour, quantised width) so a 10k-segment graph costs a
  *   few dozen `stroke()` calls rather than 10k.
+ * * Anything placed *on* a node — a label, an alignment sub-span, a path run —
+ *   is placed by arc length the way Bandage places it, never by vertex index:
+ *   the layout lets particles bunch where a contig bends.
  * * `paint()` is target-agnostic: the live canvas, the PNG export canvas and the
  *   SVG serialiser all consume the same scene description, so what you export is
  *   exactly what you see.
  */
 
-import { fmtBp } from './graph.js';
+import { fmtBp, fmtNum, perBaseScaleFor } from './graph.js';
 
 /* ====================================================================== */
 /*  Colour ramps                                                           */
@@ -68,6 +71,29 @@ const WIDTH_BUCKETS = 48;
  */
 const EDGE_EXTENSION_WORLD = 5;
 
+/**
+ * How fast label text grows with zoom. Bandage draws text in scene coordinates
+ * scaled by 1 / (1 + (zoom - 1) * factor) (`drawTextPathAtLocation`,
+ * graphicsitemnode.cpp:263-295), so on screen it grows as
+ * zoom / (1 + (zoom - 1) * factor): nearly constant, but not quite. Text that
+ * scaled with the drawing is a wall of letters at any working zoom, and text
+ * pinned to an exact pixel size stops relating to the node it names at all.
+ */
+const TEXT_ZOOM_FACTOR = 0.7;
+const LABEL_BASE_PX = 11;
+const LABEL_MIN_PX = 8;
+const LABEL_MAX_PX = 26;
+
+/** Rainbow parts per query (`blastRainbowPartsPerQuery`, settings.cpp:50). */
+const RAINBOW_PARTS_PER_QUERY = 100;
+
+/**
+ * Samples used to approximate a link's Bezier when hit testing it. A link is a
+ * few pixels wide, so a dozen chords sit well inside the tolerance the pointer
+ * needs anyway and solving the cubic would buy nothing.
+ */
+const LINK_SAMPLES = 16;
+
 function hexToRgb(h) {
   const s = h.replace('#', '');
   const v = s.length === 3
@@ -77,6 +103,27 @@ function hexToRgb(h) {
 }
 
 function rgbStr(c) { return 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')'; }
+
+/**
+ * HSV to a CSS colour, for the rainbow hit parts (`QColor::setHsvF`).
+ *
+ * Not the same sweep as CSS `hsl()`: at full saturation hsl passes through
+ * muddy mid-tones where hsv stays vivid, and a rainbow whose whole job is to be
+ * read as a position cannot afford a dull stretch in the middle.
+ */
+function hsvColour(h, s, v) {
+  const i = Math.floor(((h % 1) + 1) % 1 * 6);
+  const f = ((h % 1) + 1) % 1 * 6 - i;
+  const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  const rgb = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i % 6];
+  return rgbStr([rgb[0] * 255, rgb[1] * 255, rgb[2] * 255]);
+}
+
+/** Where an alignment identity sits on the 70-100% scale the legend prints. */
+function identityFraction(identity) {
+  const id = Number(identity);
+  return Number.isFinite(id) ? Math.max(0, Math.min(1, (id - 0.7) / 0.3)) : 1;
+}
 
 /** Sample a list of hex stops at t in [0, 1]. */
 export function sampleRamp(stops, t) {
@@ -181,6 +228,23 @@ export class ColourMapper {
     this.legend = { type: 'none' };
     /** Manual [low, high] depth cutoffs; null takes Bandage's auto quartiles. */
     this.depthRange = null;
+    /** Reference name -> palette index, so a hit sub-span matches its node. */
+    this.refIndex = new Map();
+    /** The identity ramp behind 'search', kept for per-hit sub-spans. */
+    this.searchRamp = [];
+  }
+
+  /** Palette colour for a reference sequence; the unaligned grey if unknown. */
+  refColour(ref) {
+    const i = this.refIndex.get(String(ref));
+    return this.palette[i === undefined ? 0 : i] || this.palette[0];
+  }
+
+  /** Heat colour for an alignment identity, matching the 'search' legend. */
+  identityColour(identity) {
+    const ramp = this.searchRamp;
+    if (!ramp.length) return this.palette[this.palette.length - 1];
+    return ramp[Math.round(identityFraction(identity) * (ramp.length - 1))];
   }
 
   setMode(mode) { this.mode = mode || 'uniform'; }
@@ -297,6 +361,7 @@ export class ColourMapper {
         this.palette = [grey].concat(refs.map((r, i) => CATEGORICAL[i % CATEGORICAL.length]));
         const idx = new Map();
         refs.forEach((r, i) => idx.set(r, i + 1));
+        this.refIndex = idx;
         let unaligned = 0;
         for (const s of graph.segments) {
           const hit = s.bestHit;
@@ -319,15 +384,14 @@ export class ColourMapper {
       case 'search': {
         const ramp = buildRamp(HEAT, 8);
         this.palette = [grey].concat(ramp);
+        this.searchRamp = ramp;
         const hits = graph.searchHits;
         let nHit = 0;
         for (const s of graph.segments) {
           const h = hits.get(s.name);
           if (!h) { this.segPal[s.idx] = 0; continue; }
           nHit++;
-          const id = Number(h.identity);
-          const t = Number.isFinite(id) ? Math.max(0, Math.min(1, (id - 0.7) / 0.3)) : 1;
-          this.segPal[s.idx] = 1 + Math.round(t * (ramp.length - 1));
+          this.segPal[s.idx] = 1 + Math.round(identityFraction(h.identity) * (ramp.length - 1));
         }
         this.legend = {
           type: 'scale',
@@ -412,6 +476,21 @@ function segHitsRect(x1, y1, x2, y2, rx0, ry0, rx1, ry1) {
   return true;
 }
 
+/**
+ * A pen that records into an SVG path string instead of a canvas.
+ *
+ * The partial-path and arrowhead builders are geometry, not painting, and the
+ * export is only trustworthy while it shares them: a second implementation of
+ * "the stretch of this node between two fractions" is a second thing to drift.
+ */
+class SvgPen {
+  constructor(num) { this.d = []; this.num = num; }
+  moveTo(x, y) { this.d.push('M' + this.num(x) + ' ' + this.num(y)); }
+  lineTo(x, y) { this.d.push('L' + this.num(x) + ' ' + this.num(y)); }
+  closePath() { this.d.push('Z'); }
+  toString() { return this.d.join(''); }
+}
+
 /* ====================================================================== */
 /*  Renderer                                                               */
 /* ====================================================================== */
@@ -430,8 +509,22 @@ export class Renderer {
     this.opts = {
       showLinks: true,
       showArrows: false,
+      // Bandage stacks up to four lines on a node and each line is its own
+      // toggle (`getNodeText`, graphicsitemnode.cpp:820-840). `showLabels` is
+      // the master switch over the four.
       showLabels: false,
+      labelName: false,
+      labelLength: false,
+      labelDepth: false,
+      labelCustom: false,
+      labelHalo: true,
+      labelTextSize: LABEL_BASE_PX,
       showGrid: false,
+      // Paint each alignment as a sub-span at its own place along the node
+      // rather than flat-colouring the whole node by its best hit.
+      showHitSpans: true,
+      rainbowHits: false,
+      showScaleBar: true,
       depthWidth: true,
       widthScale: 1,
       // World units, constant like Bandage's node width (`averageNodeWidth`).
@@ -446,8 +539,25 @@ export class Renderer {
     };
 
     this.selected = new Set();   // segment indices
+    this.selectedLinks = new Set();
     this.hoverIdx = -1;
+    this.hoverLink = -1;
+    this._hoverPt = null;        // last cursor position, for the link readout
     this.boxRect = null;         // screen-space rectangle while box selecting
+
+    /** Highlighted path: segment index -> [startFraction, endFraction]. */
+    this.pathRuns = new Map();
+    this.pathLinks = new Set();
+    this.pathName = '';
+
+    /**
+     * Every search hit, grouped by segment. The model keeps only the best hit
+     * per segment, which is enough to colour a node and not enough to say
+     * *where* on the node the hit is; see `setSearchHits`.
+     */
+    this.searchHitsBySeg = new Map();
+    this._queryExtent = new Map();
+    this._cumBuf = new Float64Array(64);
 
     this.segWidth = new Float32Array(0);
     this.segBucket = new Int32Array(0);
@@ -458,6 +568,7 @@ export class Renderer {
     this._usedKeys = [];
     this._visible = [];
     this._visibleLinks = [];
+    this._unselected = [];
     this._dpr = 1;
     this.width = 1;
     this.height = 1;
@@ -630,9 +741,9 @@ export class Renderer {
     this._emit('selection');
   }
 
-  selectNames(names) {
+  selectNames(names, add = false) {
     const g = this.graph;
-    const set = new Set();
+    const set = add ? new Set(this.selected) : new Set();
     for (const n of names || []) {
       const s = g.segmentByName(n);
       if (s) set.add(s.idx);
@@ -652,10 +763,134 @@ export class Renderer {
   }
 
   clearSelection() {
-    if (!this.selected.size) return;
+    if (!this.selected.size && !this.selectedLinks.size) return;
     this.selected = new Set();
+    this.selectedLinks = new Set();
     this.requestDraw();
     this._emit('selection');
+  }
+
+  /** Select links by index into `graph.links`. */
+  setLinkSelection(indices) {
+    this.selectedLinks = new Set(indices);
+    this.requestDraw();
+    this._emit('selection');
+  }
+
+  /** The selected links themselves, for a panel that wants to describe them. */
+  selectedLinkList() {
+    const out = [];
+    for (const i of this.selectedLinks) {
+      const l = this.graph.links[i];
+      if (l) out.push(l);
+    }
+    return out;
+  }
+
+  /**
+   * Highlight a resolved path as a run along its member segments.
+   *
+   * Deliberately tolerant about what a path is, because more than one thing in
+   * the model is one: the resolved record `_resolvePaths` builds
+   * (`{name, segs, links}`, already matched against the drawn graph), a GFA `P`
+   * line (`{name, steps: ['3+', '7-']}`), a walk with per-segment extents
+   * (`{name, segments: [{name, start, end}]}`, fractions or base coordinates),
+   * a bare list of segment names, or the name of a path in the model.
+   * Anything it cannot resolve to a drawn segment is skipped rather than
+   * refused, so a path that runs off the end of a truncated graph still draws
+   * the part that is on screen.
+   */
+  setHighlightPath(path) {
+    this.pathRuns = new Map();
+    this.pathLinks = new Set();
+    this.pathName = '';
+    let p = path;
+    if (typeof p === 'string') {
+      p = (this.graph.pathByName ? this.graph.pathByName(path) : null)
+        || (this.graph.paths || []).find((q) => q && String(q.name) === path) || null;
+    }
+    if (!p) { this.requestDraw(); return this; }
+
+    // A resolved path already carries segment indices and the links between
+    // them, so there is nothing to look up and nothing to guess.
+    if (p.segs && p.segs.length !== undefined && typeof p.segs[0] === 'number') {
+      this.pathName = String(p.name || '');
+      for (const si of p.segs) if (this.graph.segments[si]) this.pathRuns.set(si, [0, 1]);
+      for (const li of (p.linkSet || p.links || [])) if (li >= 0) this.pathLinks.add(li);
+      this.requestDraw();
+      return this;
+    }
+
+    const steps = Array.isArray(p) ? p : (p.segments || p.steps || p.nodes || []);
+    if (!Array.isArray(p)) this.pathName = String(p.name || '');
+
+    const order = [];
+    for (const step of steps) {
+      const raw = typeof step === 'string' ? step : (step && (step.name ?? step.segment));
+      if (raw === undefined || raw === null) continue;
+      const name = String(raw);
+      // GFA writes the orientation onto the step ('3+'); a resolved path need
+      // not, and a segment may legitimately be called '3+'.
+      let seg = this.graph.segmentByName(name);
+      if (!seg && /[+-]$/.test(name)) seg = this.graph.segmentByName(name.slice(0, -1));
+      if (!seg) continue;
+      let s = 0, e = 1;
+      if (step && typeof step === 'object') {
+        const a = Number(step.start ?? step.startFraction);
+        const b = Number(step.end ?? step.endFraction);
+        if (Number.isFinite(a) && Number.isFinite(b) && b > a) {
+          // Fractions and base coordinates are both natural to write; only
+          // bases can exceed 1.
+          const denom = (a > 1 || b > 1) ? (seg.length || 1) : 1;
+          s = Math.max(0, a / denom);
+          e = Math.min(1, b / denom);
+        }
+      }
+      this.pathRuns.set(seg.idx, [s, e]);
+      order.push(seg.idx);
+    }
+
+    // The joins matter as much as the members: a path drawn as disconnected
+    // runs does not read as a route through the graph.
+    if (order.length > 1) {
+      const want = new Set();
+      for (let i = 0; i + 1 < order.length; i++) {
+        want.add(order[i] + ':' + order[i + 1]);
+        want.add(order[i + 1] + ':' + order[i]);
+      }
+      for (const l of this.graph.links) {
+        if (want.has(l.a + ':' + l.b)) this.pathLinks.add(l.idx);
+      }
+    }
+    this.requestDraw();
+    return this;
+  }
+
+  clearHighlightPath() { this.setHighlightPath(null); }
+
+  /**
+   * Take the full search hit list (`POST /api/search` -> `hits`) so hits can be
+   * drawn as sub-spans. Falls back to the model's best-hit-per-segment map when
+   * nothing calls this, which still places one span per segment.
+   */
+  setSearchHits(hits) {
+    this.searchHitsBySeg = new Map();
+    this._queryExtent = new Map();
+    for (const h of Array.isArray(hits) ? hits : []) {
+      if (!h || h.segment === undefined || h.segment === null) continue;
+      const key = String(h.segment);
+      const arr = this.searchHitsBySeg.get(key);
+      if (arr) arr.push(h); else this.searchHitsBySeg.set(key, [h]);
+      // A search hit carries no query length, so the query's own aligned extent
+      // stands in as the rainbow's denominator: exact when the query aligns to
+      // its ends, and a fixed stretch of the same rainbow when it does not.
+      const q = String(h.query);
+      if ((Number(h.q_en) || 0) > (this._queryExtent.get(q) || 0)) {
+        this._queryExtent.set(q, Number(h.q_en) || 0);
+      }
+    }
+    this.requestDraw();
+    return this;
   }
 
   selectAllVisible() {
@@ -774,6 +1009,16 @@ export class Renderer {
   }
 
   /**
+   * Drawn width of a link. `edgeWidth` is the user's setting; the square root
+   * of the zoom keeps a link from swelling into a ribbon of its own when you
+   * zoom into a tangle.
+   */
+  _linkWidth(scale) {
+    const w = Number(this.opts.edgeWidth) > 0 ? Number(this.opts.edgeWidth) : 1.1;
+    return Math.max(0.5, Math.min(3, w * Math.sqrt(scale)));
+  }
+
+  /**
    * Screen-space geometry of one link. Shared by the canvas painter and the SVG
    * writer so an export cannot drift from what is on screen.
    */
@@ -889,6 +1134,353 @@ export class Renderer {
     return pts;
   }
 
+  /* ----------------------------------------------------- arc length */
+
+  /**
+   * Fill `_cumBuf` with the cumulative world-space length along a segment's
+   * polyline and return the total.
+   *
+   * Everything Bandage places on a node — its labels, its hit spans, a path
+   * run — is placed by arc length, never by vertex index (`getNodePathLength`,
+   * graphicsitemnode.cpp:648). The two are not the same: the layout lets
+   * particles bunch where a contig bends, so the middle vertex of a curved node
+   * can sit a long way from its middle.
+   */
+  _arc(si) {
+    const g = this.graph;
+    const seg = g.segments[si];
+    if (this._cumBuf.length < seg.k) this._cumBuf = new Float64Array(seg.k * 2);
+    const cum = this._cumBuf;
+    cum[0] = 0;
+    for (let i = 1; i < seg.k; i++) {
+      const a = seg.p0 + i;
+      cum[i] = cum[i - 1] + Math.hypot(g.px[a] - g.px[a - 1], g.py[a] - g.py[a - 1]);
+    }
+    return cum[seg.k - 1];
+  }
+
+  /** Screen point at arc-length fraction `f` (`findLocationOnPath`). */
+  _pointAtFraction(si, f) {
+    const g = this.graph;
+    const seg = g.segments[si];
+    if (seg.k < 2) {
+      return [this.worldToScreenX(g.px[seg.p0]), this.worldToScreenY(g.py[seg.p0])];
+    }
+    const total = this._arc(si);
+    const cum = this._cumBuf;
+    const target = Math.max(0, Math.min(1, f)) * total;
+    let i = 1;
+    while (i < seg.k - 1 && cum[i] < target) i++;
+    const d = cum[i] - cum[i - 1];
+    const t = d > 0 ? Math.max(0, Math.min(1, (target - cum[i - 1]) / d)) : 0;
+    const a = seg.p0 + i - 1;
+    return [
+      this.worldToScreenX(g.px[a] + (g.px[a + 1] - g.px[a]) * t),
+      this.worldToScreenY(g.py[a] + (g.py[a + 1] - g.py[a]) * t),
+    ];
+  }
+
+  /**
+   * Append the stretch of a segment between two arc-length fractions to the
+   * current path (`makePartialPath`, graphicsitemnode.cpp:600). Straight
+   * between vertices rather than splined: a sub-span is stroked at the node's
+   * own width directly over the body, so it has to follow the same line the
+   * body's spline is already close to, and a second spline over a partial
+   * vertex range would drift off it at the cut ends.
+   */
+  _partialPath(ctx, si, f0, f1) {
+    if (f1 < f0) { const t = f0; f0 = f1; f1 = t; }
+    const g = this.graph;
+    const seg = g.segments[si];
+    // A highlighted path outlives the graph it was resolved against: redrawing
+    // with a narrower scope leaves it holding indices that no longer exist.
+    if (!seg || seg.k < 2 || !(f1 > f0)) return false;
+    const total = this._arc(si);
+    const cum = this._cumBuf;
+    const a = Math.max(0, f0) * total;
+    const b = Math.min(1, f1) * total;
+    let started = false;
+    for (let i = 1; i < seg.k; i++) {
+      if (cum[i] < a) continue;
+      const p = seg.p0 + i - 1;
+      const dx = g.px[p + 1] - g.px[p], dy = g.py[p + 1] - g.py[p];
+      const d = cum[i] - cum[i - 1];
+      if (!started) {
+        started = true;
+        const t = d > 0 ? (a - cum[i - 1]) / d : 0;
+        ctx.moveTo(this.worldToScreenX(g.px[p] + dx * t), this.worldToScreenY(g.py[p] + dy * t));
+      }
+      if (cum[i] >= b) {
+        const t = d > 0 ? Math.max(0, (b - cum[i - 1]) / d) : 1;
+        ctx.lineTo(this.worldToScreenX(g.px[p] + dx * t), this.worldToScreenY(g.py[p] + dy * t));
+        return true;
+      }
+      ctx.lineTo(this.worldToScreenX(g.px[p + 1]), this.worldToScreenY(g.py[p + 1]));
+    }
+    return started;
+  }
+
+  /* ------------------------------------------------------- hit spans */
+
+  /** The palette colour a segment's body is painted in. */
+  _segColour(si) {
+    const pal = this.colour.palette;
+    return pal[this.colour.segPal[si] % pal.length] || this.theme.node;
+  }
+
+  /**
+   * The sub-spans an alignment claims of one node, in paint order, or null.
+   *
+   * An alignment is a property of a *stretch* of a contig, not of the contig
+   * (`getBlastHitParts`, blasthit.cpp:49-101). Flat-colouring a node by its best
+   * hit hides that it is half chromosome and half plasmid, which is the first
+   * thing anyone opens a graph viewer to see. `lenPx` is the node's drawn
+   * length, used only to stop the rainbow cutting parts thinner than a pixel.
+   */
+  _hitSpans(seg, lenPx) {
+    if (!this.opts.showHitSpans) return null;
+    const rainbow = !!this.opts.rainbowHits;
+    const out = [];
+
+    if (this.colour.mode === 'reference') {
+      const hits = seg.refHits;
+      if (!hits || !hits.length) return null;
+      for (const h of hits) {
+        const qlen = Number(h.q_len) > 0 ? Number(h.q_len) : seg.length;
+        const s = Number(h.q_st) / qlen, e = Number(h.q_en) / qlen;
+        if (!(qlen > 0) || !Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+        // Bandage's rainbow runs along the sequence you searched *with*. Here
+        // the node is the query and the chromosome is the subject, so the
+        // rainbow runs along the reference and the colours on a node say which
+        // part of the chromosome each stretch of it came from. On the minus
+        // strand the node walks the reference backwards.
+        const rlen = Number(h.r_len);
+        const q0 = Number(h.r_st) / rlen, q1 = Number(h.r_en) / rlen;
+        if (rainbow && rlen > 0 && Number.isFinite(q0) && Number.isFinite(q1)) {
+          const back = Number(h.strand) === -1;
+          this._rainbowParts(out, s, e, back ? q1 : q0, back ? q0 : q1, lenPx);
+        } else {
+          out.push({ colour: this.colour.refColour(h.ref), s, e });
+        }
+      }
+      return out.length ? out : null;
+    }
+
+    if (this.colour.mode === 'search') {
+      let hits = this.searchHitsBySeg.get(seg.name);
+      if (!hits) {
+        const best = this.graph.searchHits.get(seg.name);
+        if (!best) return null;
+        hits = [best];
+      }
+      const len = seg.length;
+      if (!(len > 0)) return null;
+      for (const h of hits) {
+        const s = Number(h.s_st) / len, e = Number(h.s_en) / len;
+        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+        const qlen = this._queryExtent.get(String(h.query)) || 0;
+        const q0 = Number(h.q_st) / qlen, q1 = Number(h.q_en) / qlen;
+        if (rainbow && qlen > 0 && Number.isFinite(q0) && Number.isFinite(q1)) {
+          const back = Number(h.strand) === -1;
+          this._rainbowParts(out, s, e, back ? q1 : q0, back ? q0 : q1, lenPx);
+        } else {
+          out.push({ colour: this.colour.identityColour(h.identity), s, e });
+        }
+      }
+      return out.length ? out : null;
+    }
+    return null;
+  }
+
+  /**
+   * Cut one hit into parts coloured by position along the query
+   * (blasthit.cpp:53-88). The 0.9 keeps the far end off red so the start and
+   * the end of a query can never be confused for each other; the part count is
+   * capped against the drawn length because parts under a pixel buy nothing and
+   * cost a stroke each.
+   */
+  _rainbowParts(out, s, e, qFrom, qTo, lenPx) {
+    let parts = Math.ceil(RAINBOW_PARTS_PER_QUERY * Math.abs(qTo - qFrom));
+    const room = Math.floor((e - s) * lenPx * 2);
+    if (parts > room) parts = room;
+    if (parts < 1) parts = 1;
+    const ns = (e - s) / parts;
+    const qs = (qTo - qFrom) / parts;
+    for (let i = 0; i < parts; i++) {
+      const q = Math.max(0, Math.min(1, qFrom + qs * i));
+      out.push({ colour: hsvColour(q * 0.9, 1, 1), s: s + ns * i, e: s + ns * (i + 1) });
+    }
+  }
+
+  /** Stroke one segment's body, and its arrowhead, in a given colour. */
+  _strokeSegment(ctx, si, colour, widthPx, arrows) {
+    const tip = arrows && widthPx >= 2.5 ? widthPx / 2 : 0;
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = widthPx;
+    ctx.beginPath();
+    this._segPath(ctx, si, this.graph.segments[si].drawLen * this.view.scale > 30, tip);
+    ctx.stroke();
+    if (!tip) return;
+    ctx.fillStyle = colour;
+    ctx.beginPath();
+    this._arrowPath(ctx, si, widthPx);
+    ctx.fill();
+  }
+
+  /* ---------------------------------------------------------- labels */
+
+  /** The stack of lines to write on a node (`getNodeText`). */
+  _labelLines(seg) {
+    const o = this.opts;
+    const lines = [];
+    // A custom label is whatever the model has attached to the segment; it goes
+    // first, as it does in Bandage.
+    const custom = seg.label ?? seg.customLabel;
+    if (o.labelCustom && custom) lines.push(String(custom));
+    // `showLabels` used to mean the name on its own, and a stored session or a
+    // host that knows only the master switch still means that by it.
+    if (o.labelName || !(o.labelLength || o.labelDepth || (o.labelCustom && custom))) {
+      lines.push(seg.name);
+    }
+    if (o.labelLength) lines.push(fmtBp(seg.length));
+    if (o.labelDepth && seg.depth !== null) lines.push(fmtNum(seg.depth, 1) + '×');
+    return lines;
+  }
+
+  /** Label size in screen pixels; see TEXT_ZOOM_FACTOR. */
+  _labelPx() {
+    const z = Math.max(0.05, this.view.scale);
+    const base = Number(this.opts.labelTextSize) > 0 ? Number(this.opts.labelTextSize) : LABEL_BASE_PX;
+    const px = (base * z) / (1 + (z - 1) * TEXT_ZOOM_FACTOR);
+    return Math.max(LABEL_MIN_PX, Math.min(LABEL_MAX_PX, px));
+  }
+
+  _labelFont(px) {
+    return `${px.toFixed(1)}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+  }
+
+  /* -------------------------------------------------------- scale bar */
+
+  /**
+   * Metrics for the scale bar: a round number of bases and the screen distance
+   * they occupy.
+   *
+   * Bandage has no scale bar because until the draw length was calibrated there
+   * was nothing to measure. Now a node is `perBase` world units per base, so a
+   * ruler on the canvas is honest — for every node above the `minLen` floor.
+   * A stub shorter than that is drawn longer than it is, which is a floor worth
+   * having and the one thing this bar does not describe.
+   */
+  _scaleBarMetrics(W) {
+    const g = this.graph;
+    const perBase = (g.perBase === null || g.perBase === undefined
+      ? perBaseScaleFor(g.geom) : g.perBase) * (g.geom.lengthScale || 1);
+    const pxPerBase = perBase * this.view.scale;
+    if (!Number.isFinite(pxPerBase) || pxPerBase <= 0) return null;
+    // A 1-2-5 step, so the bar always reads as a round number of bases.
+    const target = 150 / pxPerBase;
+    const mag = Math.pow(10, Math.floor(Math.log10(target)));
+    let bp = mag;
+    for (const m of [2, 5, 10]) if (mag * m <= target) bp = mag * m;
+    const len = bp * pxPerBase;
+    if (!(len >= 24) || len > W * 0.6) return null;
+    return { bp, len };
+  }
+
+  _paintScaleBar(ctx, W, H) {
+    const m = this._scaleBarMetrics(W);
+    if (!m) return;
+    const th = this.theme;
+    const x = 16, y = H - 20;
+    ctx.strokeStyle = th.dim;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, y - 4); ctx.lineTo(x + 0.5, y + 4);
+    ctx.moveTo(x + 0.5, y); ctx.lineTo(x + m.len + 0.5, y);
+    ctx.moveTo(x + m.len + 0.5, y - 4); ctx.lineTo(x + m.len + 0.5, y + 4);
+    ctx.stroke();
+    ctx.fillStyle = th.dim;
+    ctx.font = '11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(fmtBp(m.bp), x + m.len / 2, y - 7);
+  }
+
+  /* ------------------------------------------------------- link paint */
+
+  /**
+   * Links that are part of something: a highlighted path, the selection, or
+   * whatever the pointer is over. Drawn over the plain pass, because an edge
+   * you have picked out is worth nothing if it stays buried in the mesh.
+   */
+  _paintLinkAccents(ctx, scene, scale, interactive) {
+    const g = this.graph;
+    const th = this.theme;
+    const base = this._linkWidth(scale);
+    const groups = [
+      [this.pathLinks, th.accent, base * 3 + 1, 0.85],
+      [this.selectedLinks, th.sel, base * 2.4 + 1, 0.95],
+    ];
+    for (const [set, colour, w, alpha] of groups) {
+      if (!set.size) continue;
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = w;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      for (const li of scene.vlinks) if (set.has(li)) this._linkPath(ctx, g.links[li], scale);
+      ctx.stroke();
+    }
+    if (interactive && this.hoverLink >= 0 && this.hoverLink < g.links.length) {
+      ctx.strokeStyle = th.accent;
+      ctx.lineWidth = base * 2.6 + 1.5;
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      this._linkPath(ctx, g.links[this.hoverLink], scale);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** One line describing a link, overlap included. */
+  linkDescription(l) {
+    if (!l) return '';
+    return `${l.from}${l.fromOrient} → ${l.to}${l.toOrient}`
+      + (l.overlap ? ` · ${fmtBp(l.overlap)} overlap` : ' · blunt join')
+      + (l.selfLoop ? ' · self loop' : '');
+  }
+
+  /**
+   * A readout for the hovered link, drawn on the canvas.
+   *
+   * Only when nothing has claimed `linkhover`: a host that puts the link in its
+   * own tooltip or status strip should own the whole job, and two readouts for
+   * one edge is worse than none.
+   */
+  _paintLinkReadout(ctx, W, H) {
+    if (this.handlers && typeof this.handlers.linkhover === 'function') return;
+    const l = this.graph.links[this.hoverLink];
+    const pt = this._hoverPt;
+    if (!l || !pt) return;
+    const th = this.theme;
+    const text = this.linkDescription(l);
+    ctx.font = '11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width + 16;
+    const h = 22;
+    const x = Math.max(4, Math.min(pt[0] + 14, W - w - 4));
+    const y = Math.max(4, Math.min(pt[1] + 14, H - h - 4));
+    ctx.fillStyle = th.canvasBg;
+    ctx.globalAlpha = 0.92;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = th.outline || th.faint;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.fillStyle = th.text;
+    ctx.fillText(text, x + 8, y + h / 2);
+  }
+
   requestDraw() {
     if (this._needsDraw) return;
     this._needsDraw = true;
@@ -930,32 +1522,28 @@ export class Renderer {
     if (this.opts.showLinks && scene.vlinks.length) {
       ctx.strokeStyle = th.link;
       ctx.globalAlpha = 0.55;
-      ctx.lineWidth = Math.max(0.5, Math.min(3, 1.1 * Math.sqrt(scale)));
+      ctx.lineWidth = this._linkWidth(scale);
       ctx.beginPath();
       for (const li of scene.vlinks) {
+        if (this.pathLinks.has(li) || this.selectedLinks.has(li)) continue;
         this._linkPath(ctx, g.links[li], scale);
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
+      this._paintLinkAccents(ctx, scene, scale, o.interactive !== false);
     }
 
-    /* ---- selection halo (drawn under the segments) ---- */
-    if (this.selected.size) {
-      ctx.strokeStyle = th.sel;
-      ctx.globalAlpha = 0.5;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (const si of scene.vis) {
-        if (!this.selected.has(si)) continue;
-        ctx.lineWidth = this._widthPx(si) + 6;
-        ctx.beginPath();
-        this._segPath(ctx, si, this.graph.segments[si].drawLen * scale > 30);
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-    }
+    /* ---- highlighted path: the rim goes under the bodies ---- */
+    this._paintPathRuns(ctx, scene, arrows, true);
 
     /* ---- segments, batched by (colour, width bucket) ---- */
+    // Selected nodes are held back and drawn last, so the selection is never
+    // buried under the tangle it was made in (Bandage raises a selected item to
+    // the front, graphicsitemnode.cpp:180-195).
+    const unsel = this._unselected;
+    unsel.length = 0;
+    for (const si of scene.vis) if (!this.selected.has(si)) unsel.push(si);
+
     const pal = this.colour.palette;
     const nPal = pal.length;
     const keys = this._usedKeys;
@@ -963,7 +1551,7 @@ export class Renderer {
     const buckets = this._buckets;
     const needed = nPal * WIDTH_BUCKETS;
     while (buckets.length < needed) buckets.push([]);
-    for (const si of scene.vis) {
+    for (const si of unsel) {
       const key = (this.colour.segPal[si] % nPal) * WIDTH_BUCKETS + this.segBucket[si];
       const arr = buckets[key];
       if (arr.length === 0) keys.push(key);
@@ -1021,44 +1609,49 @@ export class Renderer {
     }
     for (const key of keys) buckets[key].length = 0;
 
-    /* ---- hover highlight ---- */
-    if (o.interactive && this.hoverIdx >= 0 && this.hoverIdx < g.segments.length) {
-      const hw = this._widthPx(this.hoverIdx) + 1.5;
-      const tip = arrows && hw >= 2.5 ? hw / 2 : 0;
-      ctx.strokeStyle = th.accent;
-      ctx.lineWidth = hw;
-      ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      this._segPath(ctx, this.hoverIdx, true, tip);
-      ctx.stroke();
-      if (tip) {
-        ctx.fillStyle = th.accent;
+    /* ---- alignment sub-spans ---- */
+    this._paintHitSpans(ctx, unsel, scale, arrows);
+
+    /* ---- selected nodes, raised to the front ---- */
+    if (this.selected.size) {
+      ctx.lineCap = arrows ? 'butt' : 'round';
+      ctx.lineJoin = 'round';
+      const sel = [];
+      for (const si of scene.vis) if (this.selected.has(si)) sel.push(si);
+      ctx.globalAlpha = 0.55;
+      for (const si of sel) {
+        ctx.strokeStyle = th.sel;
+        ctx.lineWidth = this._widthPx(si) + 6;
         ctx.beginPath();
-        this._arrowPath(ctx, this.hoverIdx, hw);
-        ctx.fill();
+        this._segPath(ctx, si, g.segments[si].drawLen * scale > 30);
+        ctx.stroke();
       }
+      ctx.globalAlpha = 1;
+      // The node keeps its own colour inside the halo: a selection that
+      // recolours what it selects hides the very property you selected it for.
+      for (const si of sel) this._strokeSegment(ctx, si, this._segColour(si), this._widthPx(si), arrows);
+      this._paintHitSpans(ctx, sel, scale, arrows);
+    }
+
+    /* ---- highlighted path: the shading goes over them ---- */
+    this._paintPathRuns(ctx, scene, arrows, false);
+
+    /* ---- hover: brighten, never replace ---- */
+    if (o.interactive && this.hoverIdx >= 0 && this.hoverIdx < g.segments.length) {
+      const hw = this._widthPx(this.hoverIdx);
+      this._strokeSegment(ctx, this.hoverIdx, this._segColour(this.hoverIdx), hw, arrows);
+      this._paintHitSpans(ctx, [this.hoverIdx], scale, arrows);
+      // A wash of white over the node's own colour, rather than the accent in
+      // place of it: on a rainbow graph a recoloured node reads as a different
+      // node, and the colouring the user turned on is exactly what they are
+      // pointing at it to read.
+      ctx.globalAlpha = 0.28;
+      this._strokeSegment(ctx, this.hoverIdx, '#ffffff', hw, arrows);
       ctx.globalAlpha = 1;
     }
 
     /* ---- labels ---- */
-    if (this.opts.showLabels && scene.vis.length <= 600) {
-      ctx.fillStyle = th.text;
-      ctx.strokeStyle = th.canvasBg;
-      ctx.lineWidth = 3;
-      ctx.font = '11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      for (const si of scene.vis) {
-        const seg = g.segments[si];
-        if (seg.drawLen * scale < 46) continue;
-        const mid = seg.p0 + (seg.k >> 1);
-        const x = this.worldToScreenX(g.px[mid]);
-        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this._widthPx(si) * 0.6 + 7);
-        const label = seg.name;
-        ctx.strokeText(label, x, y);
-        ctx.fillText(label, x, y);
-      }
-    }
+    this._paintLabels(ctx, scene);
 
     /* ---- box-select rubber band ---- */
     if (o.interactive && this.boxRect) {
@@ -1073,6 +1666,119 @@ export class Renderer {
       ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
+    }
+
+    if (o.interactive && this.hoverLink >= 0) this._paintLinkReadout(ctx, W, H);
+    if (this.opts.showScaleBar) this._paintScaleBar(ctx, W, H);
+  }
+
+  /**
+   * Paint every alignment sub-span on a list of segments, over the node bodies
+   * that are already down. Bandage clips the parts to the node outline so they
+   * cannot spill past an arrowhead; here the body is a stroke rather than a
+   * filled outline, so a span that reaches the tip is trimmed the same way the
+   * body is and the wedge is refilled in the span's own colour.
+   */
+  _paintHitSpans(ctx, list, scale, arrows) {
+    if (!this.opts.showHitSpans) return;
+    const g = this.graph;
+    const mode = this.colour.mode;
+    if (mode !== 'reference' && mode !== 'search') return;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'round';
+    for (const si of list) {
+      const seg = g.segments[si];
+      const lenPx = seg.drawLen * scale;
+      const parts = this._hitSpans(seg, lenPx);
+      if (!parts) continue;
+      const body = this._widthPx(si);
+      const tip = arrows && body >= 2.5 ? body / 2 : 0;
+      const cut = tip && lenPx > 0 ? 1 - Math.min(tip, lenPx) / lenPx : 1;
+      ctx.lineWidth = body;
+      for (const p of parts) {
+        ctx.strokeStyle = p.colour;
+        // A span that claims the whole node has to claim its end caps too, or
+        // the body colour underneath shows as a nub past either end.
+        ctx.lineCap = !tip && p.s <= 1e-9 && p.e >= 1 - 1e-9 ? 'round' : 'butt';
+        if (p.s < cut) {
+          ctx.beginPath();
+          if (this._partialPath(ctx, si, p.s, Math.min(p.e, cut))) ctx.stroke();
+        }
+        if (tip && p.e >= cut - 1e-9) {
+          ctx.fillStyle = p.colour;
+          ctx.beginPath();
+          this._arrowPath(ctx, si, body);
+          ctx.fill();
+        }
+      }
+    }
+    ctx.lineCap = arrows ? 'butt' : 'round';
+  }
+
+  /**
+   * The run a highlighted path claims of each member node: outlined around it
+   * and shaded along it (`pathHighlightNode3`, graphicsitemnode.cpp:1090-1103).
+   *
+   * Two passes, because both have to leave the node itself readable: the
+   * outline goes *under* the bodies so it shows as a rim rather than swallowing
+   * the node, and the shading goes over them at low alpha so the node's own
+   * colour — and any alignment span painted on it — still reads through. A path
+   * is a route through the drawing, not a recolouring of it.
+   */
+  _paintPathRuns(ctx, scene, arrows, under) {
+    if (!this.pathRuns.size) return;
+    const g = this.graph;
+    const r = scene.rect;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = under ? this.theme.accent : '#ffffff';
+    ctx.globalAlpha = under ? 0.95 : 0.2;
+    for (const [si, run] of this.pathRuns) {
+      const o = si * 4;
+      if (g.bbox[o + 2] < r[0] || g.bbox[o] > r[2] || g.bbox[o + 3] < r[1] || g.bbox[o + 1] > r[3]) continue;
+      const body = this._widthPx(si);
+      ctx.lineWidth = under ? body + 6 : body;
+      ctx.beginPath();
+      if (this._partialPath(ctx, si, run[0], run[1])) ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineCap = arrows ? 'butt' : 'round';
+  }
+
+  /**
+   * Node labels: the stack of enabled lines, centred on the node's arc-length
+   * centre and counter-scaled so the text stays near a constant size while the
+   * drawing zooms (graphicsitemnode.cpp:209-234).
+   */
+  _paintLabels(ctx, scene) {
+    const g = this.graph;
+    const th = this.theme;
+    if (!this.opts.showLabels || scene.vis.length > 600) return;
+    const px = this._labelPx();
+    const halo = this.opts.labelHalo !== false;
+    ctx.font = this._labelFont(px);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    // Bandage strokes the outline at twice its thickness and fills over it, so
+    // the halo is a rim around the glyph rather than a fattened glyph.
+    ctx.lineWidth = Math.max(2, px * 0.34);
+    ctx.strokeStyle = halo ? 'rgba(255,255,255,0.92)' : th.canvasBg;
+    ctx.fillStyle = halo ? '#10141b' : th.text;
+    const lh = px * 1.15;
+    for (const si of scene.vis) {
+      const seg = g.segments[si];
+      const lines = this._labelLines(seg);
+      if (!lines.length) continue;
+      // Nothing readable fits on a node a few pixels long, and a graph's worth
+      // of overlapping stacks is worse than no labels at all.
+      if (seg.drawLen * this.view.scale < 30) continue;
+      const c = this._pointAtFraction(si, 0.5);
+      const top = c[1] - ((lines.length - 1) * lh) / 2;
+      for (let i = 0; i < lines.length; i++) {
+        ctx.strokeText(lines[i], c[0], top + i * lh);
+        ctx.fillText(lines[i], c[0], top + i * lh);
+      }
     }
   }
 
@@ -1139,6 +1845,48 @@ export class Renderer {
     return best;
   }
 
+  /**
+   * Link index under a screen point, or -1.
+   *
+   * The Bezier is sampled rather than solved: a link is a couple of pixels
+   * wide, so the chord error over a sixteenth of a curve is far inside the
+   * tolerance the pointer needs anyway. Every point of a cubic lies inside its
+   * control hull, so the hull rejects most links before any sampling happens.
+   */
+  hitTestLink(sx, sy, tolPx = 6) {
+    if (!this.opts.showLinks || this.graph.isEmpty) return -1;
+    const g = this.graph;
+    const scale = this.view.scale;
+    let best = -1, bestD = Infinity;
+    for (const li of this._visibleLinks) {
+      const q = this._linkGeom(g.links[li], scale);
+      const x1 = q.straight ? q.ax : Math.min(q.ax, q.c1x, q.c2x, q.bx);
+      const x2 = q.straight ? q.bx : Math.max(q.ax, q.c1x, q.c2x, q.bx);
+      const y1 = q.straight ? q.ay : Math.min(q.ay, q.c1y, q.c2y, q.by);
+      const y2 = q.straight ? q.by : Math.max(q.ay, q.c1y, q.c2y, q.by);
+      if (sx < Math.min(x1, x2) - tolPx || sx > Math.max(x1, x2) + tolPx ||
+          sy < Math.min(y1, y2) - tolPx || sy > Math.max(y1, y2) + tolPx) continue;
+      let d;
+      if (q.straight) {
+        d = distPtSeg(sx, sy, q.ax, q.ay, q.bx, q.by);
+      } else {
+        d = Infinity;
+        let px = q.ax, py = q.ay;
+        for (let i = 1; i <= LINK_SAMPLES; i++) {
+          const t = i / LINK_SAMPLES;
+          const u = 1 - t;
+          const nx = u * u * u * q.ax + 3 * u * u * t * q.c1x + 3 * u * t * t * q.c2x + t * t * t * q.bx;
+          const ny = u * u * u * q.ay + 3 * u * u * t * q.c1y + 3 * u * t * t * q.c2y + t * t * t * q.by;
+          const dd = distPtSeg(sx, sy, px, py, nx, ny);
+          if (dd < d) d = dd;
+          px = nx; py = ny;
+        }
+      }
+      if (d < tolPx && d < bestD) { bestD = d; best = li; }
+    }
+    return best;
+  }
+
   /** Segment indices intersecting a screen-space rectangle. */
   boxSelect(rect) {
     const g = this.graph;
@@ -1189,8 +1937,14 @@ export class Renderer {
     c.addEventListener('pointerup', (e) => this._onUp(e));
     c.addEventListener('pointercancel', (e) => this._onUp(e));
     c.addEventListener('pointerleave', () => {
-      if (this.hoverIdx !== -1) { this.hoverIdx = -1; this.requestDraw(); }
-      this._emit('hover', -1, null);
+      if (this.hoverIdx !== -1 || this.hoverLink !== -1) {
+        this.hoverIdx = -1;
+        this.hoverLink = -1;
+        this.requestDraw();
+      }
+      this._hoverPt = null;
+      this._emit('hover', -1, null, null);
+      this._emit('linkhover', null, null);
     });
     c.addEventListener('dblclick', (e) => {
       const r = c.getBoundingClientRect();
@@ -1213,6 +1967,21 @@ export class Renderer {
     window.addEventListener('blur', () => { this._spaceDown = false; c.classList.remove('pannable'); });
   }
 
+  /**
+   * What the pointer is over, passed as a third argument to `hover` so a host
+   * can describe a link without a handler of its own.
+   */
+  hoverInfo() {
+    if (this.hoverIdx >= 0) {
+      return { kind: 'segment', segment: this.graph.segments[this.hoverIdx], link: null };
+    }
+    if (this.hoverLink >= 0) {
+      const link = this.graph.links[this.hoverLink];
+      return { kind: 'link', segment: null, link, text: this.linkDescription(link) };
+    }
+    return null;
+  }
+
   _isTypingTarget(t) {
     if (!t || !t.tagName) return false;
     const tag = t.tagName.toLowerCase();
@@ -1228,12 +1997,30 @@ export class Renderer {
     if (this.graph.isEmpty) return;
     const [sx, sy] = this._localPoint(e);
     const si = this.hitTest(sx, sy);
+    const li = si < 0 ? this.hitTestLink(sx, sy) : -1;
     this._pointerId = e.pointerId;
     try { this.canvas.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
     this.canvas.focus({ preventScroll: true });
 
-    const wantPan = e.button === 1 || this._spaceDown || (e.button === 0 && si < 0 && !e.shiftKey);
-    const wantBox = e.button === 0 && si < 0 && e.shiftKey;
+    const wantPan = e.button === 1 || this._spaceDown
+      || (e.button === 0 && si < 0 && li < 0 && !e.shiftKey);
+    const wantBox = e.button === 0 && si < 0 && li < 0 && e.shiftKey;
+
+    if (e.button === 0 && si < 0 && li >= 0 && !this._spaceDown) {
+      if (e.shiftKey) {
+        if (this.selectedLinks.has(li)) this.selectedLinks.delete(li);
+        else this.selectedLinks.add(li);
+      } else {
+        this.selected = new Set();
+        this.selectedLinks = new Set([li]);
+      }
+      // Still a pan drag underneath, so grabbing the canvas near an edge and
+      // pulling does what it does everywhere else.
+      this._drag = { mode: 'pan', sx, sy };
+      this._emit('selection');
+      this.requestDraw();
+      return;
+    }
 
     if (wantPan) {
       this._drag = { mode: 'pan', sx, sy };
@@ -1265,12 +2052,19 @@ export class Renderer {
 
     if (!d) {
       const si = this.hitTest(sx, sy);
-      if (si !== this.hoverIdx) {
+      // A node wins over a link it ends on: the node is the thing the pointer
+      // is plainly over, and the link's own reach starts where the node stops.
+      const li = si >= 0 ? -1 : this.hitTestLink(sx, sy);
+      const moved = !this._hoverPt || this._hoverPt[0] !== sx || this._hoverPt[1] !== sy;
+      this._hoverPt = [sx, sy];
+      if (si !== this.hoverIdx || li !== this.hoverLink || (li >= 0 && moved)) {
         this.hoverIdx = si;
-        this.canvas.classList.toggle('overnode', si >= 0);
+        this.hoverLink = li;
+        this.canvas.classList.toggle('overnode', si >= 0 || li >= 0);
         this.requestDraw();
       }
-      this._emit('hover', si, e);
+      this._emit('hover', si, e, this.hoverInfo());
+      this._emit('linkhover', li >= 0 ? this.graph.links[li] : null, e);
       return;
     }
 
@@ -1375,7 +2169,7 @@ export class Renderer {
 
     // links
     if (this.opts.showLinks && scene.vlinks.length) {
-      const lw = Math.max(0.5, Math.min(3, 1.1 * Math.sqrt(scale)));
+      const lw = this._linkWidth(scale);
       const d = [];
       for (const li of scene.vlinks) {
         const q = this._linkGeom(g.links[li], scale);
@@ -1386,9 +2180,40 @@ export class Renderer {
       parts.push(`<path d="${d.join('')}" fill="none" stroke="${esc(th.link)}" stroke-width="${num(lw)}" stroke-opacity="0.55"/>`);
     }
 
+    // links that belong to a path or the selection are drawn over the rest
+    if (this.opts.showLinks && (this.pathLinks.size || this.selectedLinks.size)) {
+      const lw = this._linkWidth(scale);
+      for (const [set, colour, w] of [[this.pathLinks, th.accent, lw * 3 + 1],
+        [this.selectedLinks, th.sel, lw * 2.4 + 1]]) {
+        const d = [];
+        for (const li of scene.vlinks) {
+          if (!set.has(li)) continue;
+          const q = this._linkGeom(g.links[li], scale);
+          d.push(`M${num(q.ax)} ${num(q.ay)}` + (q.straight
+            ? `L${num(q.bx)} ${num(q.by)}`
+            : `C${num(q.c1x)} ${num(q.c1y)} ${num(q.c2x)} ${num(q.c2y)} ${num(q.bx)} ${num(q.by)}`));
+        }
+        if (d.length) {
+          parts.push(`<path d="${d.join('')}" fill="none" stroke="${esc(colour)}" stroke-width="${num(w)}"/>`);
+        }
+      }
+    }
+
+    // the path rim, under the bodies
+    if (this.pathRuns.size) {
+      parts.push(`<g fill="none" stroke="${esc(th.accent)}" stroke-opacity="0.95" stroke-linecap="butt">`);
+      for (const [si, run] of this.pathRuns) {
+        const pen = new SvgPen(num);
+        if (this._partialPath(pen, si, run[0], run[1])) {
+          parts.push(`<path d="${pen}" stroke-width="${num(this._widthPx(si) + 6)}"/>`);
+        }
+      }
+      parts.push('</g>');
+    }
+
     // selection halos
     if (this.selected.size) {
-      parts.push(`<g fill="none" stroke="${esc(th.sel)}" stroke-opacity="0.5" stroke-linecap="round" stroke-linejoin="round">`);
+      parts.push(`<g fill="none" stroke="${esc(th.sel)}" stroke-opacity="0.55" stroke-linecap="round" stroke-linejoin="round">`);
       for (const si of scene.vis) {
         if (!this.selected.has(si)) continue;
         parts.push(`<path d="${this._svgPathData(si, num)}" stroke-width="${num(this._widthPx(si) + 6)}"/>`);
@@ -1396,14 +2221,17 @@ export class Renderer {
       parts.push('</g>');
     }
 
-    // segments, with the arrowhead wedges the canvas painter draws
+    // segments, with the arrowhead wedges the canvas painter draws. Selected
+    // nodes come last, in the same raise-to-front order as on screen.
     const arrows = this.opts.showArrows && scale > 0.08;
     const pal = this.colour.palette;
     const nPal = pal.length;
     const wedges = [];
     const pts = this._arrowBuf;
+    const order = scene.vis.filter((si) => !this.selected.has(si))
+      .concat(scene.vis.filter((si) => this.selected.has(si)));
     parts.push(`<g fill="none" stroke-linecap="${arrows ? 'butt' : 'round'}" stroke-linejoin="round">`);
-    for (const si of scene.vis) {
+    for (const si of order) {
       const col = pal[this.colour.segPal[si] % nPal] || th.node;
       // The painted width, so the export matches the screen exactly.
       const lw = this._widthPx(si);
@@ -1415,23 +2243,65 @@ export class Renderer {
         wedges.push(`<polygon fill="${esc(col)}" points="${num(pts[0])},${num(pts[1])} `
           + `${num(pts[2])},${num(pts[3])} ${num(pts[4])},${num(pts[5])}"/>`);
       }
+      // alignment sub-spans, over the body they belong to
+      const lenPx = seg.drawLen * scale;
+      const spans = this._hitSpans(seg, lenPx) || [];
+      const cut = tip && lenPx > 0 ? 1 - Math.min(tip, lenPx) / lenPx : 1;
+      for (const p of spans) {
+        if (p.s < cut) {
+          const pen = new SvgPen(num);
+          if (this._partialPath(pen, si, p.s, Math.min(p.e, cut))) {
+            parts.push(`<path d="${pen}" stroke="${esc(p.colour)}" stroke-width="${num(lw)}" stroke-linecap="butt"/>`);
+          }
+        }
+        if (tip && p.e >= cut - 1e-9 && this._arrowPoints(si, lw, pts)) {
+          wedges.push(`<polygon fill="${esc(p.colour)}" points="${num(pts[0])},${num(pts[1])} `
+            + `${num(pts[2])},${num(pts[3])} ${num(pts[4])},${num(pts[5])}"/>`);
+        }
+      }
+      // and the highlighted path's run along it, shaded over the body the way
+      // the canvas painter shades it
+      const run = this.pathRuns.get(si);
+      if (run) {
+        const pen = new SvgPen(num);
+        if (this._partialPath(pen, si, run[0], run[1])) {
+          parts.push(`<path d="${pen}" stroke="#ffffff" stroke-width="${num(lw)}" `
+            + `stroke-opacity="0.2" stroke-linecap="butt"/>`);
+        }
+      }
     }
     parts.push('</g>');
     if (wedges.length) parts.push('<g>' + wedges.join('') + '</g>');
 
-    // labels
+    // labels: the same stack, centred on the same arc-length centre
     if (this.opts.showLabels && scene.vis.length <= 600) {
-      parts.push(`<g font-family="system-ui, sans-serif" font-size="11" text-anchor="middle" fill="${esc(th.text)}">`);
+      const px = this._labelPx();
+      const lh = px * 1.15;
+      const halo = this.opts.labelHalo !== false;
+      parts.push(`<g font-family="system-ui, sans-serif" font-size="${num(px)}" text-anchor="middle" `
+        + `fill="${esc(halo ? '#10141b' : th.text)}" stroke="${esc(halo ? '#ffffff' : th.canvasBg)}" `
+        + `stroke-width="${num(Math.max(2, px * 0.34))}" stroke-linejoin="round" paint-order="stroke">`);
       for (const si of scene.vis) {
-        const seg = g.segments[si];
-        if (seg.drawLen * scale < 46) continue;
-        const mid = seg.p0 + (seg.k >> 1);
-        const x = this.worldToScreenX(g.px[mid]);
-        const y = this.worldToScreenY(g.py[mid]) - Math.max(8, this._widthPx(si) * 0.6 + 7);
-        parts.push(`<text x="${num(x)}" y="${num(y)}" stroke="${esc(th.canvasBg)}" stroke-width="3" `
-          + `paint-order="stroke" >${esc(seg.name)}</text>`);
+        const lines = this._labelLines(g.segments[si]);
+        if (!lines.length || g.segments[si].drawLen * scale < 30) continue;
+        const c = this._pointAtFraction(si, 0.5);
+        const top = c[1] - ((lines.length - 1) * lh) / 2 + px * 0.35;
+        for (let i = 0; i < lines.length; i++) {
+          parts.push(`<text x="${num(c[0])}" y="${num(top + i * lh)}">${esc(lines[i])}</text>`);
+        }
       }
       parts.push('</g>');
+    }
+
+    if (this.opts.showScaleBar) {
+      const m = this._scaleBarMetrics(W);
+      if (m) {
+        const x = 16, y = H - 20;
+        parts.push(`<path d="M${x} ${y - 4}V${y + 4}M${x} ${y}H${num(x + m.len)}M${num(x + m.len)} ${y - 4}V${y + 4}" `
+          + `fill="none" stroke="${esc(th.dim)}" stroke-width="1"/>`);
+        parts.push(`<text x="${num(x + m.len / 2)}" y="${y - 7}" font-family="system-ui, sans-serif" `
+          + `font-size="11" text-anchor="middle" fill="${esc(th.dim)}">${esc(fmtBp(m.bp))}</text>`);
+      }
     }
 
     if (o.caption) {

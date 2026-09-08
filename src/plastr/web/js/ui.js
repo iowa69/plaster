@@ -6,7 +6,7 @@
  * canvas and this module only tells it what to show.
  */
 
-import api, { ApiError } from './api.js';
+import api, { ApiError, API_BASE } from './api.js';
 import GraphModel, { fmtBp, fmtInt, fmtNum, bestRefHit } from './graph.js';
 import { LayoutController, DEFAULT_PARAMS } from './layout.js';
 import Renderer, { readTheme } from './render.js';
@@ -128,16 +128,107 @@ export function createApp() {
     return status;
   };
 
-  /** Fetch the graph and hand it to the renderer. */
-  app.reloadGraph = async ({ relayout = false, keepPositions = true } = {}) => {
+  /* ---- graph scope ---- */
+
+  /**
+   * Query parameters for GET /api/graph, from the Graph scope panel.
+   *
+   * `scope` and its arguments are Bandage's graph scope: the *server* decides
+   * which segments a scope names, because only it holds the sequences and the
+   * whole graph. A server that does not know these parameters ignores them and
+   * returns the entire graph, so `min_length` and `max_nodes` always go too.
+   */
+  function scopeParams() {
+    const scope = $('scope-mode')?.value || 'entire';
     const params = {
+      scope,
       min_length: int('lod-minlen', 0),
       max_nodes: int('lod-maxnodes', 15000),
     };
-    const comp = $('lod-component')?.value;
-    if (comp !== '' && comp !== undefined && comp !== null) params.component = parseInt(comp, 10);
+    if (scope === 'around') {
+      params.nodes = ($('scope-nodes')?.value || '').split(/[,\s]+/).filter(Boolean).join(',');
+      params.distance = int('scope-distance', 0);
+      params.match = radio('scope-match') || 'exact';
+    } else if (scope === 'depth') {
+      if ($('scope-depth-min')?.value !== '') params.depth_min = num('scope-depth-min', 0);
+      if ($('scope-depth-max')?.value !== '') params.depth_max = num('scope-depth-max', 0);
+    } else if (scope === 'component') {
+      const comp = $('lod-component')?.value;
+      if (comp !== '' && comp !== undefined && comp !== null) params.component = parseInt(comp, 10);
+    }
+    return params;
+  }
 
-    const payload = await api.graph(params);
+  /**
+   * GET /api/graph with whatever parameters the scope panel produced.
+   *
+   * `api.graph()` forwards only the three it was written for; rather than wait
+   * for it to grow the other five this goes at the endpoint directly, and
+   * raises the same ApiError the rest of the app already handles.
+   */
+  async function fetchGraph(params) {
+    const query = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === null || v === undefined || v === '') continue;
+      query.append(k, String(v));
+    }
+    const res = await fetch(`${API_BASE}/graph?${query}`, { headers: { Accept: 'application/json' } });
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* an error page, not JSON */ }
+    if (!res.ok) {
+      throw new ApiError(data?.error || `HTTP ${res.status}`, data?.detail || text.slice(0, 400),
+        res.status, '/graph');
+    }
+    return data || {};
+  }
+
+  /**
+   * Say what the server drew and what it left out, and why.
+   *
+   * `shown`/`total`/`truncated` come from the payload. A server with graph
+   * scopes may also send `dropped`: a list of `{reason, count}` naming what each
+   * filter removed, which is printed verbatim. Links are counted here instead,
+   * because whether a link resolved is only known once the client has matched
+   * its ends against the segments it actually received.
+   */
+  function renderScopeReport(payload) {
+    const box = $('scope-report');
+    if (!box) return;
+    if (!payload) { box.innerHTML = ''; return; }
+
+    const shown = Number(payload.shown ?? graph.segments.length) || 0;
+    const total = Number(payload.total ?? shown) || 0;
+    const hidden = Math.max(0, total - shown);
+
+    const notes = [];
+    const dropped = Array.isArray(payload.dropped) ? payload.dropped : [];
+    for (const d of dropped) {
+      notes.push(`${fmtInt(d.count)} ${esc(d.reason || 'segment(s) dropped')}`);
+    }
+    // A reason is only guessed here for a server too old to send one: printed
+    // beside the server's own account it would state a second, different rule.
+    if (!dropped.length && hidden) {
+      notes.push(payload.truncated
+        ? `${fmtInt(hidden)} segment(s) past the ${fmtInt(int('lod-maxnodes', 15000))}-node cap.`
+        : `${fmtInt(hidden)} segment(s) fall outside this scope.`);
+    }
+    if (payload.truncated) notes.push('Raise “max nodes drawn” to see more.');
+    if (graph.droppedLinks) {
+      notes.push(`${fmtInt(graph.droppedLinks)} link(s) hidden because the segment at one end is not drawn.`);
+    }
+
+    box.innerHTML =
+      `<div class="kv"><span>Drawn</span><b>${fmtInt(shown)} / ${fmtInt(total)} segments</b></div>` +
+      `<div class="kv"><span>Links</span><b>${fmtInt(graph.links.length)}</b></div>` +
+      (notes.length
+        ? `<ul class="drop-list">${notes.map((n) => `<li>${n}</li>`).join('')}</ul>`
+        : '<p class="result-note">Nothing was dropped.</p>');
+  }
+
+  /** Fetch the graph and hand it to the renderer. */
+  app.reloadGraph = async ({ relayout = false, keepPositions = true } = {}) => {
+    const payload = await fetchGraph(scopeParams());
     graph.setData(payload, { keepPositions });
     if (!keepPositions) graph.seedPositions();
     graph.updateBounds();
@@ -160,9 +251,7 @@ export function createApp() {
         'warn', 7000,
       );
     }
-    if (graph.droppedLinks) {
-      setStatus(`${fmtInt(graph.droppedLinks)} link(s) hidden because an endpoint is not shown`);
-    }
+    renderScopeReport(payload);
     // Fit now so something is on screen while the layout settles, and fit
     // again when it finishes, since the graph moves a long way in between.
     renderer.fitToView(null);
@@ -247,7 +336,71 @@ export function createApp() {
     }
   }
 
+  /* ---- find nodes ---- */
+
+  /**
+   * Segment names matching a query.
+   *
+   * Bandage matches either the whole name or any part of it, over a
+   * comma-separated list of terms; this is the same, over the segments actually
+   * drawn. A name the current scope excluded cannot be found here, which is
+   * why the no-match note points back at the scope panel.
+   */
+  function matchNames(query, exact) {
+    const terms = String(query || '').split(/[,\s]+/).filter(Boolean);
+    if (!terms.length) return [];
+    // Deduplicated, or a name typed twice is counted and listed twice while
+    // only ever selecting one segment.
+    if (exact) return [...new Set(terms)].filter((t) => graph.byName.has(t));
+    const lowered = terms.map((t) => t.toLowerCase());
+    const out = [];
+    for (const seg of graph.segments) {
+      const name = seg.name.toLowerCase();
+      if (lowered.some((t) => name.includes(t))) out.push(seg.name);
+    }
+    return out;
+  }
+
+  /** Find by name, select the matches and frame them. Returns the names. */
+  app.findNodes = (query, { exact = checked('find-exact') } = {}) => {
+    const box = $('find-results');
+    const text = String(query || '').trim();
+    if (!text) {
+      if (box) box.innerHTML = '';
+      return [];
+    }
+    const names = matchNames(text, exact);
+    if (!names.length) {
+      if (box) {
+        box.innerHTML = '<p class="result-note">No drawn segment has that name. ' +
+          'If it was filtered out, widen the graph scope and redraw.</p>';
+      }
+      setStatus(`No segment matches “${text}”`);
+      return [];
+    }
+    app.selectSegments(names, { focus: true });
+    if (box) {
+      box.innerHTML =
+        `<p class="result-note">${fmtInt(names.length)} match${names.length === 1 ? '' : 'es'}</p>` +
+        `<div class="dl-row name-chips">${names.slice(0, 40).map((n) =>
+          `<a href="#" class="pill" data-goto="${esc(n)}">${esc(n)}</a>`).join('')}</div>` +
+        (names.length > 40 ? `<p class="legend-more">+ ${fmtInt(names.length - 40)} more, all selected</p>` : '');
+      wireGotoLinks(box);
+    }
+    setStatus(`${fmtInt(names.length)} segment(s) found`);
+    return names;
+  };
+
   /* ---- selection ---- */
+
+  /** Every "click this name to go there" link in a rendered block. */
+  function wireGotoLinks(box) {
+    box.querySelectorAll('[data-goto]').forEach((b) =>
+      b.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        app.selectSegments([b.dataset.goto], { focus: true });
+      }));
+  }
 
   app.selectSegments = (names, { add = false, focus = false } = {}) => {
     renderer.selectNames(names, add);
@@ -262,24 +415,137 @@ export function createApp() {
     }
   };
 
+  /** Frame whatever is selected, without changing the selection. */
+  app.frameSelection = () => {
+    const idx = renderer.selectedNames()
+      .map((n) => graph.segmentByName(n))
+      .filter(Boolean)
+      .map((s) => s.idx);
+    if (!idx.length) { app.toast('Nothing is selected', 'warn'); return; }
+    renderer.fitToView(idx);
+  };
+
+  /**
+   * Count, total length and mean depth of the selection.
+   *
+   * Depth is a per-base quantity, so the only average that means anything is
+   * length-weighted — the same one Bandage divides by when it sizes a node.
+   */
+  function updateSelectionStats() {
+    const segs = renderer.selectedNames().map((n) => graph.segmentByName(n)).filter(Boolean);
+    for (const id of ['sel-frame', 'sel-copy', 'sel-fasta', 'sel-clear']) {
+      const b = $(id);
+      if (b) b.disabled = segs.length === 0;
+    }
+    const box = $('selection-stats');
+    if (!box) return;
+    if (!segs.length) {
+      box.innerHTML = '<p class="result-note">Nothing selected.</p>';
+      return;
+    }
+    let total = 0;
+    let depthSum = 0;
+    let depthLen = 0;
+    for (const s of segs) {
+      total += s.length;
+      if (s.depth !== null) { depthSum += s.depth * s.length; depthLen += s.length; }
+    }
+    const mean = depthLen > 0 ? depthSum / depthLen : null;
+    const cell = (label, value) =>
+      `<div class="stat"><span class="stat-k">${esc(label)}</span><b class="stat-v">${esc(value)}</b></div>`;
+    box.innerHTML =
+      cell('Segments', fmtInt(segs.length)) +
+      cell('Total length', fmtBp(total)) +
+      cell('Mean depth', mean === null ? '—' : `${fmtNum(mean, 2)}×`);
+  }
+
+  /**
+   * How many sequences the fallback below will fetch one at a time before it
+   * gives up and asks for a narrower selection.
+   */
+  const FASTA_FALLBACK_LIMIT = 400;
+
+  /**
+   * FASTA for the named segments.
+   *
+   * The route is POST /api/fasta `{names, wrap}` -> `{fasta}` (a name may carry
+   * a `+`/`-` suffix, and `-` gives the reverse complement). A server that
+   * answers it with a real complaint — too many bases, no sequences in this
+   * graph — has that complaint shown; one that does not have the endpoint at
+   * all replies with something that is not our error shape, and the segment
+   * endpoint every server has is used instead.
+   */
+  async function fastaFor(names) {
+    try {
+      const res = await fetch(`${API_BASE}/fasta`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ names, wrap: 60 }),
+      });
+      const text = await res.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch { /* not our JSON */ }
+      if (res.ok && typeof data?.fasta === 'string') return data.fasta;
+      if (res.ok && text.trim().startsWith('>')) return text;
+      if (data?.error) throw new ApiError(data.error, data.detail || '', res.status, '/fasta');
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      /* no such endpoint here; fall through */
+    }
+
+    if (names.length > FASTA_FALLBACK_LIMIT) {
+      throw new Error(
+        `This server has no bulk FASTA endpoint, so ${fmtInt(names.length)} sequences would be ` +
+        `${fmtInt(names.length)} requests. Select at most ${FASTA_FALLBACK_LIMIT}, or export the graph.`);
+    }
+    const parts = [];
+    for (const name of names) {
+      const detail = await api.segment(name);
+      const seq = detail.sequence || '';
+      const lines = [];
+      for (let i = 0; i < seq.length; i += 60) lines.push(seq.slice(i, i + 60));
+      parts.push(`>${name} length=${detail.length}` +
+        (detail.depth === null || detail.depth === undefined ? '' : ` depth=${detail.depth}`) +
+        `\n${lines.join('\n')}\n`);
+    }
+    return parts.join('');
+  }
+
+  /** The selection as FASTA, or null with the reason already reported. */
+  app.selectionFasta = async () => {
+    const names = renderer.selectedNames();
+    if (!names.length) { app.toast('Nothing is selected', 'warn'); return null; }
+    return guard('Collecting sequences…', async () => {
+      const fasta = await fastaFor(names);
+      if (!fasta.trim()) {
+        app.toast('The selected segments carry no sequence — this graph has none', 'warn', 6000);
+        return null;
+      }
+      return fasta;
+    });
+  };
+
   async function showSelectionDetail() {
+    updateSelectionStats();
     const box = $('selection-detail');
     if (!box) return;
     const names = renderer.selectedNames();
     if (!names.length) {
-      box.innerHTML = '<p class="result-note">Click a segment to see its details. Shift-click adds to the selection; drag on empty space to box-select.</p>';
+      box.innerHTML = '<p class="result-note">Click a segment to see its details. ' +
+        'Shift-click adds to the selection; drag on empty space to box-select.</p>';
       return;
     }
     if (names.length > 1) {
       const segs = names.map((n) => graph.segmentByName(n)).filter(Boolean);
-      const total = segs.reduce((a, s) => a + s.length, 0);
       box.innerHTML =
-        `<div class="results"><h4>${fmtInt(names.length)} segments selected</h4>` +
-        `<p class="result-note">${esc(fmtBp(total))} total</p><ul>` +
-        segs.slice(0, 40).map((s) =>
-          `<li><code>${esc(s.name)}</code> <span class="muted">${esc(fmtBp(s.length))}</span></li>`).join('') +
-        (segs.length > 40 ? `<li class="muted">…and ${fmtInt(segs.length - 40)} more</li>` : '') +
-        '</ul></div>';
+        `<h4>Selected contigs</h4><ul class="sel-list">` +
+        segs.slice(0, 60).map((s) =>
+          `<li><a href="#" data-goto="${esc(s.name)}"><code>${esc(s.name)}</code></a>` +
+          `<span class="muted">${esc(fmtBp(s.length))}` +
+          (s.depth === null ? '' : ` · ${fmtNum(s.depth, 1)}×`) + '</span></li>').join('') +
+        (segs.length > 60 ? `<li class="muted">…and ${fmtInt(segs.length - 60)} more</li>` : '') +
+        '</ul>';
+      wireGotoLinks(box);
       return;
     }
 
@@ -317,15 +583,11 @@ export function createApp() {
             `<a href="#" class="pill" data-goto="${esc(n)}">${esc(n)}</a>`).join('')}</div>`
         : '') +
       (detail.sequence
-        ? `<h4>Sequence</h4><textarea class="seq-box" readonly rows="4">${esc(detail.sequence)}</textarea>` +
+        ? `<h4>Sequence</h4><textarea class="seq-box" readonly rows="4" aria-label="Sequence of ${esc(name)}">${esc(detail.sequence)}</textarea>` +
           `<div class="btn-row"><button class="btn btn-sm" id="copy-seq">Copy sequence</button></div>`
         : '') + '</div>';
 
-    box.querySelectorAll('[data-goto]').forEach((b) =>
-      b.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        app.selectSegments([b.dataset.goto], { focus: true });
-      }));
+    wireGotoLinks(box);
     box.querySelector('#copy-seq')?.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(detail.sequence);
@@ -474,11 +736,7 @@ export function createApp() {
             `<span class="muted">${esc(m.description)}</span></li>`).join('')}</ul>`
         : '') + '</div>';
 
-    box.querySelectorAll('[data-goto]').forEach((b) =>
-      b.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        app.selectSegments([b.dataset.goto], { focus: true });
-      }));
+    wireGotoLinks(box);
   }
   app.renderReferenceResults = renderReferenceResults;
 
@@ -657,11 +915,7 @@ export function createApp() {
           `<li><a href="#" data-goto="${esc(h.segment)}"><code>${esc(h.segment)}</code></a> ` +
           `<span class="muted">${fmtNum(h.identity * 100, 1)}% · ${fmtBp(h.length)} · ` +
           `${fmtInt(h.s_st)}–${fmtInt(h.s_en)} ${h.strand > 0 ? '+' : '−'}</span></li>`).join('')}</ul></div>`;
-      box.querySelectorAll('[data-goto]').forEach((b) =>
-        b.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          app.selectSegments([b.dataset.goto], { focus: true });
-        }));
+      wireGotoLinks(box);
       app.selectSegments(result.hits.map((h) => h.segment));
     } else {
       box.innerHTML = '<p class="result-note">No hits.</p>';
@@ -840,6 +1094,117 @@ export function createApp() {
     if (e.target.id === 'modal-browse' || e.target.classList.contains('modal-backdrop')) closeBrowser();
   });
 
+  /* ---- settings ---- */
+
+  /**
+   * Drawing tunables, Bandage's settings dialog cut down to the ones that
+   * change the picture rather than the algorithm.
+   *
+   * The renderer reads `baseWidth`, `depthPower`, `depthEffectOnWidth` and
+   * `outlineNodes` today; `edgeWidth`, `labelTextSize`, `antialias` and the
+   * three label fields are the option names it is expected to grow. Setting an
+   * option the renderer does not read yet is inert, so every control is wired
+   * now and starts working the moment the renderer honours it.
+   */
+  const SETTINGS_KEY = 'plastr-settings';
+  const SETTINGS_DEFAULTS = Object.freeze({
+    nodeWidth: 5,
+    depthPower: 0.5,
+    depthEffect: 0.5,
+    edgeWidth: 1.1,
+    textSize: 11,
+    outline: true,
+    antialias: true,
+    autoLength: true,
+    perMegabase: 1000,
+    labelName: false,
+    labelLength: false,
+    labelDepth: false,
+  });
+  let settings = { ...SETTINGS_DEFAULTS };
+
+  const SETTINGS_CONTROLS = [
+    ['nodeWidth', 'set-nodewidth', 'set-nodewidth-out', 1],
+    ['depthPower', 'set-depthpower', 'set-depthpower-out', 2],
+    ['depthEffect', 'set-deptheffect', 'set-deptheffect-out', 2],
+    ['edgeWidth', 'set-edgewidth', 'set-edgewidth-out', 1],
+    ['textSize', 'set-textsize', 'set-textsize-out', 0],
+  ];
+
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* private mode */ }
+  }
+
+  /** Push the numbers at the renderer. */
+  function applyRenderSettings() {
+    renderer.setOption('baseWidth', settings.nodeWidth);
+    renderer.setOption('depthPower', settings.depthPower);
+    renderer.setOption('depthEffectOnWidth', settings.depthEffect);
+    renderer.setOption('edgeWidth', settings.edgeWidth);
+    renderer.setOption('labelTextSize', settings.textSize);
+    renderer.setOption('outlineNodes', settings.outline);
+    renderer.setOption('antialias', settings.antialias);
+    renderer.setOption('labelName', settings.labelName);
+    renderer.setOption('labelLength', settings.labelLength);
+    renderer.setOption('labelDepth', settings.labelDepth);
+    // The renderer's master switch: with it off nothing is drawn whatever the
+    // three fields say, so it is the union of them.
+    renderer.setOption('showLabels', settings.labelName || settings.labelLength || settings.labelDepth);
+  }
+
+  /**
+   * Re-map every drawn length after the calibration rule changed.
+   *
+   * `calibrate` needs the segment count and the base count it was given at load
+   * time; they are recovered from the model rather than remembered, because a
+   * graph operation can change both between two visits to this panel.
+   */
+  function applyLengthSettings() {
+    graph.geom.autoLength = settings.autoLength;
+    graph.geom.unitsPerMegabase = settings.perMegabase;
+    const perMb = $('set-permb');
+    if (perMb) perMb.disabled = settings.autoLength;
+    if (graph.isEmpty) return;
+    let bases = 0;
+    for (const seg of graph.segments) bases += seg.length;
+    graph.calibrate(graph.segments.length, bases);
+    graph.rescale(graph.geom.lengthScale || 1);
+    graph.updateBounds();
+    renderer.updateStyle();
+    app.layout?.markDirty();
+    renderer.requestDraw();
+  }
+
+  /** Write the settings into their controls, then apply them. */
+  function syncSettingsControls() {
+    for (const [key, slider, out, dp] of SETTINGS_CONTROLS) {
+      const el = $(slider);
+      if (el) el.value = String(settings[key]);
+      if ($(out)) $(out).value = Number(settings[key]).toFixed(dp);
+    }
+    const pairs = [
+      ['set-outline', 'outline'], ['set-antialias', 'antialias'],
+      ['set-autolength', 'autoLength'],
+      ['lab-name', 'labelName'], ['lab-length', 'labelLength'], ['lab-depth', 'labelDepth'],
+    ];
+    for (const [id, key] of pairs) { const el = $(id); if (el) el.checked = !!settings[key]; }
+    const perMb = $('set-permb');
+    if (perMb) perMb.value = String(settings.perMegabase);
+    applyRenderSettings();
+    applyLengthSettings();
+  }
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') || {};
+      for (const key of Object.keys(SETTINGS_DEFAULTS)) {
+        if (saved[key] !== undefined) settings[key] = saved[key];
+      }
+    } catch { /* private mode, or a stale shape */ }
+    syncSettingsControls();
+  }
+  app.applySettings = syncSettingsControls;
+
   /* ---- wiring ---- */
 
   function wire() {
@@ -854,7 +1219,95 @@ export function createApp() {
       await app.reloadGraph({ keepPositions: true });
       app.toast(`Attached ${fmtInt(r.added)} path(s)`, 'ok');
     }));
-    on('lod-apply', 'click', () => guard('Applying…', () => app.reloadGraph({ keepPositions: true })));
+
+    // Graph scope
+    const syncScopeArgs = () => {
+      const scope = $('scope-mode')?.value || 'entire';
+      for (const [name, id] of [['around', 'scope-args-around'], ['depth', 'scope-args-depth'],
+        ['component', 'scope-args-component']]) {
+        const el = $(id);
+        if (el) el.hidden = scope !== name;
+      }
+    };
+    on('scope-mode', 'change', syncScopeArgs);
+    syncScopeArgs();
+    on('scope-nodes', 'keydown', (e) => { if (e.key === 'Enter') $('lod-apply').click(); });
+    on('scope-from-sel', 'click', () => {
+      const names = renderer.selectedNames();
+      if (!names.length) { app.toast('Nothing is selected', 'warn'); return; }
+      $('scope-nodes').value = names.join(', ');
+      // Names taken from the graph are exact by construction.
+      const exact = document.querySelector('input[name="scope-match"][value="exact"]');
+      if (exact) exact.checked = true;
+    });
+    on('scope-reset', 'click', () => {
+      $('scope-mode').value = 'entire';
+      syncScopeArgs();
+      guard('Redrawing…', () => app.reloadGraph({ keepPositions: true }));
+    });
+    on('lod-apply', 'click', () => guard('Redrawing…', () => app.reloadGraph({ keepPositions: true })));
+
+    // Find nodes
+    on('find-go', 'click', () => app.findNodes($('find-input').value));
+    on('find-input', 'keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); app.findNodes(e.target.value); }
+    });
+    on('find-exact', 'change', () => {
+      const q = $('find-input')?.value.trim();
+      if (q) app.findNodes(q);
+    });
+
+    // Selection
+    on('sel-frame', 'click', () => app.frameSelection());
+    on('sel-clear', 'click', () => renderer.clearSelection());
+    on('sel-copy', 'click', async () => {
+      const fasta = await app.selectionFasta();
+      if (!fasta) return;
+      try {
+        await navigator.clipboard.writeText(fasta);
+        app.toast(`Copied ${fmtInt(renderer.selectedNames().length)} sequence(s)`, 'ok', 2500);
+      } catch {
+        // Clipboard access needs a secure context; saving is the way out.
+        app.download(fasta, 'plastr-selection.fasta', 'text/x-fasta');
+        app.toast('The clipboard is unavailable here, so the FASTA was saved instead', 'info', 6000);
+      }
+    });
+    on('sel-fasta', 'click', async () => {
+      const fasta = await app.selectionFasta();
+      if (!fasta) return;
+      app.download(fasta, 'plastr-selection.fasta', 'text/x-fasta');
+      app.toast('FASTA saved', 'ok', 2500);
+    });
+
+    // Node labels and settings
+    for (const [id, key] of [['lab-name', 'labelName'], ['lab-length', 'labelLength'],
+      ['lab-depth', 'labelDepth'], ['set-outline', 'outline'], ['set-antialias', 'antialias']]) {
+      on(id, 'change', () => { settings[key] = checked(id); applyRenderSettings(); saveSettings(); });
+    }
+    for (const [key, slider, out, dp] of SETTINGS_CONTROLS) {
+      on(slider, 'input', (e) => {
+        settings[key] = Number(e.target.value);
+        if ($(out)) $(out).value = settings[key].toFixed(dp);
+        applyRenderSettings();
+        saveSettings();
+      });
+    }
+    on('set-autolength', 'change', () => {
+      settings.autoLength = checked('set-autolength');
+      applyLengthSettings();
+      saveSettings();
+    });
+    on('set-permb', 'change', () => {
+      settings.perMegabase = Math.max(1, num('set-permb', SETTINGS_DEFAULTS.perMegabase));
+      applyLengthSettings();
+      saveSettings();
+    });
+    on('set-reset', 'click', () => {
+      settings = { ...SETTINGS_DEFAULTS };
+      syncSettingsControls();
+      saveSettings();
+      app.toast('Drawing settings restored', 'ok', 2500);
+    });
 
     // Colour / style
     on('colour-mode', 'change', (e) => {
@@ -866,7 +1319,6 @@ export function createApp() {
     });
     styleToggle('opt-depth-width', 'depthWidth');
     styleToggle('opt-arrows', 'showArrows');
-    styleToggle('opt-labels', 'showLabels');
     styleToggle('opt-links', 'showLinks');
     on('width-scale', 'input', (e) => {
       $('width-scale-out').value = Number(e.target.value).toFixed(1);
@@ -1038,8 +1490,10 @@ export function createApp() {
         settings: {
           colourMode: $('colour-mode').value,
           widthScale: num('width-scale', 1),
-          showLabels: checked('opt-labels'),
           showLinks: checked('opt-links'),
+          labels: {
+            name: checked('lab-name'), length: checked('lab-length'), depth: checked('lab-depth'),
+          },
         },
       });
       app.toast('Session saved on the server — use the session.json link to keep a copy', 'ok', 6000);
@@ -1049,6 +1503,13 @@ export function createApp() {
       if (data.layout) { graph.importLayout(data.layout); graph.updateBounds(); renderer.requestDraw(); }
       const s = data.settings || {};
       if (s.colourMode) { $('colour-mode').value = s.colourMode; renderer.setColourMode(s.colourMode); }
+      if (s.labels) {
+        settings.labelName = !!s.labels.name;
+        settings.labelLength = !!s.labels.length;
+        settings.labelDepth = !!s.labels.depth;
+        syncSettingsControls();
+        saveSettings();
+      }
       updateColourLegend();
       app.toast('Session restored', 'ok');
     }));
@@ -1088,6 +1549,34 @@ export function createApp() {
       dragend: () => { graph.updateBounds(); app.layout?.syncPositions(); },
     });
 
+    /** Open the Find panel if it is collapsed, then put the caret in its box. */
+    const focusFind = () => {
+      const panel = $('panel-find');
+      if (panel?.classList.contains('collapsed')) panel.querySelector('.panel-head')?.click();
+      const box = $('find-input');
+      box?.focus();
+      box?.select();
+    };
+
+    // The canvas is a focusable control, so it has to answer the keyboard: a
+    // mouse is not the only way to reach a part of the drawing.
+    canvas?.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const step = e.shiftKey ? 140 : 40;
+      switch (e.key) {
+        case 'ArrowLeft': renderer.panBy(step, 0); break;
+        case 'ArrowRight': renderer.panBy(-step, 0); break;
+        case 'ArrowUp': renderer.panBy(0, step); break;
+        case 'ArrowDown': renderer.panBy(0, -step); break;
+        case '+': case '=':
+          renderer.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.25); break;
+        case '-': case '_':
+          renderer.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.25); break;
+        default: return;
+      }
+      e.preventDefault();
+    });
+
     // Keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName) || e.target.isContentEditable;
@@ -1097,6 +1586,10 @@ export function createApp() {
         if ($('rearrange-pop')) $('rearrange-pop').hidden = true;
         if (!typing) renderer.clearSelection();
         return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        // The browser's own find cannot see anything painted on a canvas.
+        e.preventDefault(); focusFind(); return;
       }
       if (typing) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -1109,7 +1602,8 @@ export function createApp() {
       switch (e.key.toLowerCase()) {
         case 'r': e.preventDefault(); $('btn-rearrange').click(); break;
         case 'f': e.preventDefault(); renderer.fitToView(null); break;
-        case '/': e.preventDefault(); $('search-query')?.focus(); break;
+        case 'c': e.preventDefault(); $('sel-copy')?.click(); break;
+        case '/': e.preventDefault(); focusFind(); break;
         case '?': e.preventDefault(); if ($('help-overlay')) $('help-overlay').hidden = false; break;
         case 'a':
           e.preventDefault();
@@ -1149,6 +1643,9 @@ export function createApp() {
     window.addEventListener('resize', () => renderer.resize());
     buildDownloadLinks();
     clearReferenceResults();
+    loadSettings();
+    updateSelectionStats();
+    showSelectionDetail();
   }
 
   app.wire = wire;
