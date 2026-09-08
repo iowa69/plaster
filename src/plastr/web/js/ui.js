@@ -912,9 +912,25 @@ export function createApp() {
     on('btn-stop-layout', 'click', () => app.stopLayout());
     // Decimals must match each slider's step, or the readout disagrees with the
     // value actually used -- repulsion steps by 0.005 and read '0.1' at 0.05.
-    for (const [slider, out, dp] of [['rr-repulsion', 'rr-rep-out', 3], ['rr-linkstr', 'rr-link-out', 2], ['rr-gravity', 'rr-grav-out', 3]]) {
+    //
+    // The sliders are also *seeded* from DEFAULT_PARAMS rather than trusting the
+    // value in the markup. `startLayout` reads the physics out of the DOM, so a
+    // stale `value=` attribute silently overrides the engine's defaults and
+    // tuning the engine appears to do nothing at all.
+    for (const [slider, out, dp, key] of [
+      ['rr-repulsion', 'rr-rep-out', 3, 'repulsion'],
+      ['rr-linkstr', 'rr-link-out', 2, 'linkStrength'],
+      ['rr-gravity', 'rr-grav-out', 3, 'gravity'],
+    ]) {
+      const el = $(slider);
+      if (el && DEFAULT_PARAMS[key] !== undefined) {
+        el.value = String(DEFAULT_PARAMS[key]);
+        if ($(out)) $(out).value = Number(el.value).toFixed(dp);
+      }
       on(slider, 'input', (e) => { $(out).value = Number(e.target.value).toFixed(dp); });
     }
+    const iters = $('rr-iters');
+    if (iters) iters.value = String(DEFAULT_PARAMS.maxIter);
     document.addEventListener('click', (e) => {
       if (!pop || pop.hidden) return;
       if (pop.contains(e.target) || e.target.closest('#btn-rearrange-menu')) return;

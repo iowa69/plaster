@@ -33,19 +33,51 @@ export const END_END = 1;
 export const DEFAULT_GEOM = Object.freeze({
   minLen: 5,           // shortest polyline in world units; short nodes are stubs
   maxLen: 40000,       // a sanity ceiling, not a working limit
-  //: World units per megabase -- an **absolute** scale, as Bandage uses, not one
-  //  normalised per graph. This is what makes a small graph read as short thick
-  //  bars and a 5 Mb assembly as long thin ribbons: the same contig is drawn the
-  //  same size whatever else is loaded alongside it.
+  // World units per megabase. This is only the *fallback* used before a graph
+  // has been calibrated (and when `autoLength` is off); `GraphModel.calibrate`
+  // replaces it per graph. See `calibrateScale` for why a fixed value cannot
+  // work: it makes the drawn size of a contig depend on nothing but its length,
+  // so a 5 kb contig in a 5 Mb assembly lands on `minLen` and every contig in
+  // the graph becomes the same stub.
   unitsPerMegabase: 1000,
+  // Bandage's calibration targets: the *mean* node should come out this many
+  // world units long, and the whole drawing at least this long in total.
+  // (AssemblyGraph::determineGraphInfo, assemblygraph.cpp:408-420.)
+  meanNodeLength: 40,
+  minTotalGraphLength: 500,
+  autoLength: true,    // false pins the scale to `unitsPerMegabase`
   lengthScale: 1,      // user multiplier from the "node length" slider
-  // Fewer, longer sub-segments: a chain with many particles behaves like a
-  // floppy rope under the force sim and buckles into a serpentine. The
-  // renderer smooths between control points, so a handful is enough.
-  particleSpacing: 70,
+  // One polyline vertex per `particleSpacing` world units, with no practical
+  // ceiling: this is Bandage's `nodeSegmentLength` (20.0). A long contig has to
+  // be free to acquire many vertices, because that is the only way it can bend
+  // into the sweeping curves that make a Bandage picture readable. Buckling is
+  // held off by the layout's curvature term, not by starving the polyline.
+  particleSpacing: 20,
   minParticles: 2,
-  maxParticles: 10,
+  maxParticles: 400,
 });
+
+/**
+ * World units per base for a whole graph, Bandage's way.
+ *
+ * Bandage calibrates once per graph so the *mean* node is ~40 units long
+ * whatever the assembly's size, which is what keeps the same picture legible
+ * for a 40 kb phage and a 5 Mb chromosome. A fixed units-per-megabase cannot:
+ * at 1000 u/Mb a 5 kb contig is 5 units long, which is the `minLen` floor, so
+ * on any real bacterial assembly every contig collapses to an identical stub
+ * and the drawing stops carrying length at all.
+ *
+ * @param {number} nSegments  segments that will be drawn
+ * @param {number} totalBases total bases across those segments
+ */
+export function calibrateScale(nSegments, totalBases, geom = DEFAULT_GEOM) {
+  const n = Number(nSegments) || 0;
+  const total = Number(totalBases) || 0;
+  const target = Math.max(n * (geom.meanNodeLength || 40), geom.minTotalGraphLength || 500);
+  const megabases = total / 1e6;
+  const perMegabase = megabases > 0 ? target / megabases : 10000;
+  return perMegabase / 1e6;
+}
 
 /**
  * Draw length of a segment, **linear in sequence length**.
@@ -96,6 +128,19 @@ export function toEndOf(toOrient) {
 /** Particle index for a given end of a segment record. */
 export function endParticle(seg, whichEnd) {
   return whichEnd === END_END ? seg.p0 + seg.k - 1 : seg.p0;
+}
+
+/**
+ * The vertex one step *inward* from an end.
+ *
+ * An edge leaves a node along the node's own terminal direction, so the drawing
+ * needs both the endpoint and its neighbour to know which way that is. For a
+ * two-vertex segment the neighbour is the opposite end, which still gives the
+ * right direction.
+ */
+export function innerParticle(seg, whichEnd) {
+  if (seg.k < 2) return endParticle(seg, whichEnd);
+  return whichEnd === END_END ? seg.p0 + seg.k - 2 : seg.p0 + 1;
 }
 
 /** Format helpers shared by several panels. */
@@ -172,13 +217,126 @@ export class GraphModel {
 
   get isEmpty() { return this.segments.length === 0; }
 
-  /** Re-map every segment's drawn length; used by the node-length slider. */
+  /**
+   * Fix the bp -> world-unit scale for this graph.
+   *
+   * Called once per payload, before segments are built, so every drawn length
+   * in the model shares one scale. `lengthScale` (the node-length slider) is
+   * applied on top in `drawLengthFor`, so re-scaling never needs recalibration.
+   */
+  calibrate(nSegments, totalBases) {
+    this.perBase = this.geom.autoLength === false
+      ? perBaseScaleFor(this.geom)
+      : calibrateScale(nSegments, totalBases, this.geom);
+    return this.perBase;
+  }
+
+  /**
+   * Re-map every segment's drawn length; used by the node-length slider.
+   *
+   * Particle counts are re-derived too: a segment that grows tenfold needs the
+   * vertices to bend with, and one that shrinks should give them back. Callers
+   * must re-seed positions after this, which `revision++` signals.
+   */
   rescale(lengthScale) {
     this.geom.lengthScale = Number(lengthScale) || 1;
+
+    // Keep the picture. The slider changes how long a contig is drawn, not
+    // where it sits, so each polyline is resampled onto its new vertex count
+    // along its own current shape and then stretched about its own centre.
+    const oldPx = this.px;
+    const oldPy = this.py;
+    const old = this.segments.map(seg => ({ p0: seg.p0, k: seg.k, drawLen: seg.drawLen }));
+
+    let p = 0;
     for (const seg of this.segments) {
       seg.drawLen = drawLengthFor(seg.length, this.geom, this.perBase);
+      seg.k = particleCountFor(seg.drawLen, this.geom);
+      seg.p0 = p;
+      p += seg.k;
+    }
+    this._reallocParticles(p);
+
+    for (let s = 0; s < this.segments.length; s++) {
+      this._resamplePolyline(this.segments[s], old[s], oldPx, oldPy);
+    }
+
+    for (const l of this.links) {
+      const a = this.segments[l.a];
+      const b = this.segments[l.b];
+      l.pa = endParticle(a, l.aEnd);
+      l.pb = endParticle(b, l.bEnd);
+      l.paIn = innerParticle(a, l.aEnd);
+      l.pbIn = innerParticle(b, l.bEnd);
     }
     this.revision++;
+  }
+
+  /**
+   * Lay `seg`'s new vertices along the shape it had under `old`.
+   *
+   * Vertices are placed at equal arc-length fractions of the old polyline, then
+   * the whole run is scaled about its midpoint by the ratio of the new drawn
+   * length to the old one. A segment with no usable old geometry is left at the
+   * origin for the layout to seed.
+   */
+  _resamplePolyline(seg, old, oldPx, oldPy) {
+    const k = seg.k;
+    if (!old || old.k < 1 || old.p0 + old.k > oldPx.length) return;
+
+    // Arc length along the old polyline.
+    const cum = new Float64Array(old.k);
+    for (let i = 1; i < old.k; i++) {
+      const dx = oldPx[old.p0 + i] - oldPx[old.p0 + i - 1];
+      const dy = oldPy[old.p0 + i] - oldPy[old.p0 + i - 1];
+      cum[i] = cum[i - 1] + Math.hypot(dx, dy);
+    }
+    const total = cum[old.k - 1];
+
+    let cx = 0;
+    let cy = 0;
+    for (let i = 0; i < k; i++) {
+      const t = k > 1 ? (i / (k - 1)) * total : 0;
+      let x;
+      let y;
+      if (total <= 0) {
+        x = oldPx[old.p0];
+        y = oldPy[old.p0];
+      } else {
+        let j = 1;
+        while (j < old.k - 1 && cum[j] < t) j++;
+        const span = cum[j] - cum[j - 1];
+        const f = span > 0 ? (t - cum[j - 1]) / span : 0;
+        x = oldPx[old.p0 + j - 1] + (oldPx[old.p0 + j] - oldPx[old.p0 + j - 1]) * f;
+        y = oldPy[old.p0 + j - 1] + (oldPy[old.p0 + j] - oldPy[old.p0 + j - 1]) * f;
+      }
+      this.px[seg.p0 + i] = x;
+      this.py[seg.p0 + i] = y;
+      cx += x;
+      cy += y;
+    }
+
+    // Stretch about the centre so the node grows in place rather than dragging
+    // one end across the drawing.
+    const ratio = old.drawLen > 0 ? seg.drawLen / old.drawLen : 1;
+    if (!(ratio > 0) || Math.abs(ratio - 1) < 1e-6 || k < 2) return;
+    cx /= k;
+    cy /= k;
+    for (let i = 0; i < k; i++) {
+      this.px[seg.p0 + i] = cx + (this.px[seg.p0 + i] - cx) * ratio;
+      this.py[seg.p0 + i] = cy + (this.py[seg.p0 + i] - cy) * ratio;
+    }
+  }
+
+  /** Resize the particle arrays and rebuild the particle -> segment map. */
+  _reallocParticles(p) {
+    this.nParticles = p;
+    this.px = new Float32Array(p);
+    this.py = new Float32Array(p);
+    this.particleSeg = new Int32Array(p);
+    for (const seg of this.segments) {
+      for (let i = 0; i < seg.k; i++) this.particleSeg[seg.p0 + i] = seg.idx;
+    }
   }
 
   /**
@@ -189,10 +347,28 @@ export class GraphModel {
   setData(payload, { keepPositions = true } = {}) {
     const prev = keepPositions ? this._snapshotPositions() : null;
     const geom = this.geom;
-    this.perBase = perBaseScaleFor(geom);
 
     const rawSegs = (payload && Array.isArray(payload.segments)) ? payload.segments : [];
     const rawLinks = (payload && Array.isArray(payload.links)) ? payload.links : [];
+
+    // Calibrate before any segment is sized, so one scale covers the graph.
+    // Duplicate names are skipped below; counting them here would shrink the
+    // scale slightly, which is harmless, but the totals are cheap to get right.
+    {
+      const seen = new Set();
+      let n = 0;
+      let totalBases = 0;
+      for (let i = 0; i < rawSegs.length; i++) {
+        const s = rawSegs[i] || {};
+        const name = String(s.name !== undefined && s.name !== null ? s.name : 'seg_' + i);
+        if (seen.has(name)) continue;
+        seen.add(name);
+        n++;
+        const L = Number(s.length);
+        if (Number.isFinite(L) && L > 0) totalBases += L;
+      }
+      this.calibrate(n, totalBases);
+    }
 
     this.segments = [];
     this.byName = new Map();
@@ -257,6 +433,16 @@ export class GraphModel {
         aEnd: fEnd, bEnd: tEnd,
         pa: endParticle(a, fEnd),
         pb: endParticle(b, tEnd),
+        // One vertex inward from each attachment point. The renderer extends
+        // these through the endpoints to get the Bézier control points, so an
+        // edge continues the direction the node was already travelling.
+        paIn: innerParticle(a, fEnd),
+        pbIn: innerParticle(b, tEnd),
+        // A link from a segment to itself is the graph's way of saying the
+        // contig closes into a circle. Drawn as a straight chord it would run
+        // through the node body and vanish under it, so the renderer bows it
+        // out sideways and the layout leaves it out of the spring set.
+        selfLoop: a.idx === b.idx,
       });
     }
 
@@ -446,21 +632,33 @@ export class GraphModel {
     const comps = this.components;
     if (!comps.length) return;
     const cols = Math.max(1, Math.ceil(Math.sqrt(comps.length)));
+
+    // Everything here is in drawn units, so it has to be derived from the drawn
+    // sizes rather than from fixed constants: the bp -> unit scale is
+    // calibrated per graph, so a segment can be five units long or five
+    // thousand. Seeding at a fixed radius piles every contig on top of its
+    // neighbours and leaves the force model to untangle a knot it did not need
+    // to be given.
+    const spreadOf = (comp) => {
+      const n = Math.max(1, comp.segs.length);
+      let total = 0;
+      for (const si of comp.segs) total += this.segments[si].drawLen;
+      const mean = total / n;
+      return Math.sqrt(n) * Math.max(mean, 1) * 0.75 + mean;
+    };
+
     // Cell size follows the biggest component so nothing starts on top of
     // anything else.
     let cell = 0;
-    for (const c of comps) {
-      let span = 0;
-      for (const si of c.segs) span += this.segments[si].drawLen;
-      cell = Math.max(cell, Math.sqrt(Math.max(1, span)) * 6 + 120);
-    }
+    for (const c of comps) cell = Math.max(cell, spreadOf(c) * 2.4 + 40);
+
     comps.forEach((comp, ci) => {
       const gx = (ci % cols) * cell;
       const gy = Math.floor(ci / cols) * cell;
       const n = comp.segs.length;
       // Golden-angle spiral: even coverage, no clumping.
       const golden = Math.PI * (3 - Math.sqrt(5));
-      const spread = Math.sqrt(Math.max(1, n)) * 26 + 30;
+      const spread = spreadOf(comp);
       comp.segs.forEach((si, k) => {
         const seg = this.segments[si];
         const r = spread * Math.sqrt((k + 0.5) / n);

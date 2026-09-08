@@ -37,8 +37,22 @@ export const CATEGORICAL = [
 
 /** Number of quantised entries used for a continuous ramp. */
 const RAMP_STEPS = 32;
-/** Number of quantised line-width buckets. */
-const WIDTH_BUCKETS = 12;
+/**
+ * Number of quantised line-width buckets.
+ *
+ * Width carries read depth, so coarse buckets throw that signal away: at 12 a
+ * 4x-depth contig and a mean-depth one land in the same bucket at most working
+ * zooms. Bucketing exists to keep the batch count down, and only the
+ * `strokeStyle` change is expensive, so this can be generous.
+ */
+const WIDTH_BUCKETS = 48;
+
+/**
+ * How far an edge's control point continues past the node end, in world units.
+ * Bandage's `edgeLength`, which is also the ideal spring length of a link, so
+ * the curve's reach matches the gap the layout leaves.
+ */
+const EDGE_EXTENSION_WORLD = 5;
 
 function hexToRgb(h) {
   const s = h.replace('#', '');
@@ -632,6 +646,78 @@ export class Renderer {
     ctx.lineTo(px[p0 + k - 1] * s + ox, py[p0 + k - 1] * s + oy);
   }
 
+  /**
+   * Append one link to the current path, Bandage-style.
+   *
+   * A link is a cubic Bézier whose control points continue each node's own
+   * terminal direction (`GraphicsItemEdge::calculateAndSetPath`). That
+   * tangential join is what makes connected contigs read as one flowing strand
+   * instead of a set of bars wired together, and it is the most recognisable
+   * property of a Bandage drawing. The extension is clamped to half the gap so
+   * a short link cannot loop back on itself.
+   *
+   * A link from a segment to itself is a circular contig closing up. Drawn as a
+   * chord it would run straight through the node body and be hidden by it, so
+   * it is bowed out sideways instead.
+   */
+  _linkPath(ctx, l, scale) {
+    const q = this._linkGeom(l, scale);
+    ctx.moveTo(q.ax, q.ay);
+    if (q.straight) ctx.lineTo(q.bx, q.by);
+    else ctx.bezierCurveTo(q.c1x, q.c1y, q.c2x, q.c2y, q.bx, q.by);
+  }
+
+  /**
+   * Screen-space geometry of one link. Shared by the canvas painter and the SVG
+   * writer so an export cannot drift from what is on screen.
+   */
+  _linkGeom(l, scale) {
+    const g = this.graph;
+    const ax = this.worldToScreenX(g.px[l.pa]);
+    const ay = this.worldToScreenY(g.py[l.pa]);
+    const bx = this.worldToScreenX(g.px[l.pb]);
+    const by = this.worldToScreenY(g.py[l.pb]);
+
+    // Inward neighbours give each end its direction. Older models may not carry
+    // them, in which case fall back to a straight chord.
+    if (l.paIn === undefined || l.pbIn === undefined) {
+      return { ax, ay, bx, by, straight: true };
+    }
+    const aix = this.worldToScreenX(g.px[l.paIn]);
+    const aiy = this.worldToScreenY(g.py[l.paIn]);
+    const bix = this.worldToScreenX(g.px[l.pbIn]);
+    const biy = this.worldToScreenY(g.py[l.pbIn]);
+
+    // Outward unit vectors: away from the inner neighbour, through the end.
+    let adx = ax - aix, ady = ay - aiy;
+    const adl = Math.hypot(adx, ady) || 1;
+    adx /= adl; ady /= adl;
+    let bdx = bx - bix, bdy = by - biy;
+    const bdl = Math.hypot(bdx, bdy) || 1;
+    bdx /= bdl; bdy /= bdl;
+
+    const ext = EDGE_EXTENSION_WORLD * scale;
+
+    if (l.selfLoop) {
+      // Bow the loop off the node along the end's normal so it stays visible.
+      const nx = -ady, ny = adx;
+      const r = Math.max(ext * 3, 10);
+      return {
+        ax, ay, bx, by, straight: false,
+        c1x: ax + adx * r + nx * r, c1y: ay + ady * r + ny * r,
+        c2x: bx + bdx * r + nx * r, c2y: by + bdy * r + ny * r,
+      };
+    }
+
+    const dist = Math.hypot(bx - ax, by - ay);
+    const e = Math.min(ext, dist / 2);
+    return {
+      ax, ay, bx, by, straight: false,
+      c1x: ax + adx * e, c1y: ay + ady * e,
+      c2x: bx + bdx * e, c2y: by + bdy * e,
+    };
+  }
+
   /** Screen-space polyline points for a segment (used by the SVG writer). */
   _segPoints(si) {
     const g = this.graph;
@@ -683,13 +769,7 @@ export class Renderer {
       ctx.lineWidth = Math.max(0.5, Math.min(3, 1.1 * Math.sqrt(scale)));
       ctx.beginPath();
       for (const li of scene.vlinks) {
-        const l = g.links[li];
-        const ax = this.worldToScreenX(g.px[l.pa]);
-        const ay = this.worldToScreenY(g.py[l.pa]);
-        const bx = this.worldToScreenX(g.px[l.pb]);
-        const by = this.worldToScreenY(g.py[l.pb]);
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(bx, by);
+        this._linkPath(ctx, g.links[li], scale);
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -738,10 +818,12 @@ export class Renderer {
         const arr = buckets[key];
         const colIdx = Math.floor(key / WIDTH_BUCKETS);
         const wIdx = key % WIDTH_BUCKETS;
-        // Keep a floor in *screen* pixels: zoomed out to fit a whole assembly
-        // a world-space width collapses to a hairline and the ribbons that
-        // carry the length information stop reading as ribbons at all.
-        const body = Math.max(2.4, Math.min(90, this.bucketWidth[wIdx] * scale));
+        // Keep a floor in *screen* pixels so ribbons stay visible when zoomed
+        // out, but a soft one: at 2.4 px every node hit the floor together at
+        // ordinary zooms and the depth signal in the width vanished, while the
+        // outline pass below could never trigger because `body` was never
+        // allowed under its own threshold.
+        const body = Math.max(1, Math.min(90, this.bucketWidth[wIdx] * scale));
         if (pass === 0) {
           // Skip the outline when the body is too thin for it to read.
           if (body < 2.2) continue;
@@ -1131,9 +1213,10 @@ export class Renderer {
       const lw = Math.max(0.5, Math.min(3, 1.1 * Math.sqrt(scale)));
       const d = [];
       for (const li of scene.vlinks) {
-        const l = g.links[li];
-        d.push(`M${num(this.worldToScreenX(g.px[l.pa]))} ${num(this.worldToScreenY(g.py[l.pa]))}`
-             + `L${num(this.worldToScreenX(g.px[l.pb]))} ${num(this.worldToScreenY(g.py[l.pb]))}`);
+        const q = this._linkGeom(g.links[li], scale);
+        d.push(`M${num(q.ax)} ${num(q.ay)}` + (q.straight
+          ? `L${num(q.bx)} ${num(q.by)}`
+          : `C${num(q.c1x)} ${num(q.c1y)} ${num(q.c2x)} ${num(q.c2y)} ${num(q.bx)} ${num(q.by)}`));
       }
       parts.push(`<path d="${d.join('')}" fill="none" stroke="${esc(th.link)}" stroke-width="${num(lw)}" stroke-opacity="0.55"/>`);
     }
@@ -1155,7 +1238,8 @@ export class Renderer {
     parts.push('<g fill="none" stroke-linecap="round" stroke-linejoin="round">');
     for (const si of scene.vis) {
       const col = pal[this.colour.segPal[si] % nPal] || th.node;
-      const lw = Math.max(0.7, Math.min(90, this.segWidth[si] * scale));
+      // Same floor as the canvas painter, so the export matches the screen.
+      const lw = Math.max(1, Math.min(90, this.segWidth[si] * scale));
       const seg = g.segments[si];
       parts.push(`<path d="${this._svgPathData(si, num)}" stroke="${esc(col)}" stroke-width="${num(lw)}">`
         + `<title>${esc(seg.name)} · ${esc(fmtBp(seg.length))}</title></path>`);
