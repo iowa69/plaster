@@ -1,0 +1,179 @@
+{# Two assemblies compared by content. Self-contained: no CDN, no chart library,
+   the bars are inline SVG built in report.py. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+  :root {
+    --ink: #1d2430; --dim: #5d6875; --faint: #8a94a3;
+    --line: #dfe4ea; --bg: #eef1f5; --card: #ffffff;
+    --shared: #3d8f5b; --partial: #d99a2b; --missing: #c4553d; --accent: #1f6feb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 20px 64px; background: var(--bg); color: var(--ink);
+         font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .page { max-width: 1080px; margin: 0 auto; background: var(--card);
+          padding: 34px 38px 44px; border-radius: 8px; box-shadow: 0 1px 3px rgba(20,30,45,.09); }
+  .eyebrow { text-transform: uppercase; letter-spacing: .09em; font-size: 11px;
+             font-weight: 700; color: var(--accent); margin: 0 0 6px; }
+  h1 { margin: 0 0 14px; font-size: 27px; letter-spacing: -.01em; }
+  h2 { margin: 34px 0 12px; font-size: 17px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+  h3 { margin: 22px 0 8px; font-size: 14px; color: var(--dim); font-weight: 600; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 34px; color: var(--dim);
+          font-size: 13px; border-bottom: 2px solid var(--ink); padding-bottom: 14px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dim); }
+  .lede { color: var(--dim); max-width: 74ch; }
+
+  .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 8px; }
+  @media (max-width: 820px) { .sides { grid-template-columns: 1fr; } }
+  .side { border: 1px solid var(--line); border-radius: 7px; padding: 16px 18px 18px; }
+  .side h3 { margin-top: 0; color: var(--ink); font-size: 15px; }
+  .side .path { font-size: 11px; }
+  .figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0 6px; }
+  .fig { background: #f6f8fa; border-radius: 5px; padding: 8px 10px; }
+  .fig .k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+  .fig .v { font-size: 17px; font-weight: 650; }
+  .fig.missing .v { color: var(--missing); }
+  .fig.shared .v { color: var(--shared); }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 4px; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+  .tag.missing { background: #fbe9e5; color: var(--missing); }
+  .tag.partial { background: #fdf3e0; color: #9a6a12; }
+  .tag.circular { background: #e7f0fb; color: #2a5fa8; }
+  .none { color: var(--shared); font-size: 13px; margin: 4px 0 0; }
+  .more { color: var(--faint); font-size: 12px; margin: 4px 0 0; }
+  footer { margin-top: 30px; color: var(--faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <p class="eyebrow">Assembly comparison</p>
+  <h1>{{ title }}</h1>
+  <div class="meta">
+    <span><b>Generated</b> {{ generated }}</span>
+    <span><b>Preset</b> <code>{{ preset }}</code></span>
+    <span><b>Shared at</b> {{ shared_fraction | fmt_float(0) }}% covered</span>
+    <span><b>Missing below</b> {{ present_fraction | fmt_float(0) }}%</span>
+    {% if min_identity %}<span><b>Min identity</b> {{ min_identity | fmt_float(2) }}</span>{% endif %}
+  </div>
+
+  <h2>What each assembly has that the other does not</h2>
+  <p class="lede">
+    Every contig is aligned to the whole of the other assembly and scored by how
+    much of it that assembly covers, counted per base so a contig hit many times
+    over the same stretch does not read as present. Both directions are shown,
+    because neither answers the question alone.
+  </p>
+
+  <div class="sides">
+    {% for s in [a, b] %}
+    <div class="side">
+      <h3>{{ s.label }}</h3>
+      {% if s.path %}<div class="path"><code>{{ s.path }}</code></div>{% endif %}
+      {{ s.bar | safe }}
+      <div class="figures">
+        <div class="fig shared">
+          <div class="k">also in {{ s.other }}</div>
+          <div class="v">{{ s.shared_percent | fmt_float(2) }}%</div>
+        </div>
+        <div class="fig missing">
+          <div class="k">not in {{ s.other }}</div>
+          <div class="v">{{ s.unique_bases | fmt_bp }}</div>
+        </div>
+        <div class="fig">
+          <div class="k">contigs</div>
+          <div class="v">{{ s.num_contigs | fmt_int }}</div>
+        </div>
+      </div>
+      <table>
+        <tr><td>Total length</td><td class="num">{{ s.total_length | fmt_int }} bp</td></tr>
+        <tr><td>Contigs fully shared</td><td class="num">{{ s.counts.shared | fmt_int }}</td></tr>
+        <tr><td>Contigs partly missing</td><td class="num">{{ s.counts.partial | fmt_int }}</td></tr>
+        <tr><td>Contigs absent from {{ s.other }}</td><td class="num">{{ s.counts.missing | fmt_int }}</td></tr>
+        <tr><td>Bases in absent contigs</td><td class="num">{{ s.missing_bases | fmt_int }} bp</td></tr>
+        {% if s.without_sequence %}
+        <tr><td>Contigs without sequence</td><td class="num">{{ s.without_sequence | fmt_int }}</td></tr>
+        {% endif %}
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% for s in [a, b] %}
+  <h2>{{ s.label }}: not fully present in {{ s.other }}</h2>
+
+  <h3>Whole components</h3>
+  <p class="lede">
+    A connected component none of whose contigs align is a molecule the other
+    assembly does not have at all &mdash; on a pair of isolates, usually a
+    plasmid. This is the result no table of contiguity statistics can show.
+  </p>
+  {% if s.components %}
+  <table>
+    <thead><tr>
+      <th>Status</th><th class="num">Contigs</th><th class="num">Length</th>
+      <th class="num">Covered</th><th>Shape</th><th>Members</th>
+    </tr></thead>
+    <tbody>
+    {% for c in s.components %}
+      <tr>
+        <td><span class="tag {{ c.status }}">{{ c.status }}</span></td>
+        <td class="num">{{ c.contigs | length }}</td>
+        <td class="num">{{ c.length | fmt_int }}</td>
+        <td class="num">{{ (100.0 * c.covered_fraction) | fmt_float(1) }}%</td>
+        <td>{% if c.circular %}<span class="tag circular">circular</span>{% else %}linear{% endif %}</td>
+        <td><code>{{ c.contigs[:6] | join(", ") }}{% if c.contigs | length > 6 %} …{% endif %}</code></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if s.components_more %}<p class="more">{{ s.components_more | fmt_int }} more not shown.</p>{% endif %}
+  {% else %}
+  <p class="none">Every component is fully accounted for in {{ s.other }}.</p>
+  {% endif %}
+
+  <h3>Contigs</h3>
+  {% if s.contigs %}
+  <table>
+    <thead><tr>
+      <th>Status</th><th>Contig</th><th class="num">Length</th><th class="num">Covered</th>
+      <th class="num">Depth</th><th>Best match in {{ s.other }}</th><th class="num">Identity</th>
+    </tr></thead>
+    <tbody>
+    {% for c in s.contigs %}
+      <tr>
+        <td><span class="tag {{ c.status }}">{{ c.status }}</span></td>
+        <td><code>{{ c.name }}</code>{% if c.circular %} <span class="tag circular">circular</span>{% endif %}</td>
+        <td class="num">{{ c.length | fmt_int }}</td>
+        <td class="num">{{ (100.0 * c.covered_fraction) | fmt_float(1) }}%</td>
+        <td class="num">{% if c.depth is not none %}{{ c.depth | fmt_float(1) }}&times;{% else %}&mdash;{% endif %}</td>
+        <td>{% if c.best_match %}<code>{{ c.best_match }}</code>{% else %}&mdash;{% endif %}</td>
+        <td class="num">{% if c.best_identity is not none %}{{ (100.0 * c.best_identity) | fmt_float(1) }}%{% else %}&mdash;{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if s.contigs_more %}<p class="more">{{ s.contigs_more | fmt_int }} more not shown.</p>{% endif %}
+  {% else %}
+  <p class="none">Every contig is fully present in {{ s.other }}.</p>
+  {% endif %}
+  {% endfor %}
+
+  <footer>
+    Coverage is measured per base: overlapping alignments count once, so a
+    contig covered many times over one stretch is not reported as present.
+    Alignments are not split at long indels here, so a contig whose middle the
+    other assembly lacks reads as partial rather than shared.
+  </footer>
+</div>
+</body>
+</html>

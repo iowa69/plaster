@@ -65,6 +65,11 @@ class Project:
         self.reference_lengths = {}
         self.alignments = []
         self.reference_report = None
+        #: Result of comparing this assembly against another one, and the
+        #: per-contig status derived from it, so the studio can colour by it.
+        self.diff = None
+        self.diff_status: dict[str, str] = {}
+        self.diff_path = None
         self.plan = None
         self.undo_stack = []
         self.layout = {}
@@ -79,6 +84,43 @@ class Project:
         return load_spades_paths(self.require_graph(), path)
 
     # -- reference ----------------------------------------------------------
+
+    def set_comparison(
+        self,
+        other_path: str | os.PathLike[str],
+        preset: str = "asm10",
+        min_identity: float = 0.0,
+        threads: int = 4,
+    ):
+        """Compare this assembly against another by content.
+
+        Keeps only this side's per-contig verdict on the project, because that
+        is what the drawing colours by; the full two-way result is returned for
+        whoever wants to report on it.
+        """
+        from .analysis.diff import diff_graphs
+        from .io.loader import load_graph
+
+        if self.graph is None:
+            raise PlastrError("load an assembly before comparing it to another")
+        other = load_graph(other_path)
+        label = os.path.splitext(os.path.basename(str(other_path)))[0]
+        result = diff_graphs(
+            self.graph, other,
+            label_a=os.path.splitext(os.path.basename(self.source_path or "this assembly"))[0],
+            label_b=label,
+            path_a=self.source_path, path_b=str(other_path),
+            preset=preset, min_identity=min_identity, threads=threads,
+        )
+        self.diff = result
+        self.diff_path = str(other_path)
+        self.diff_status = {c.name: c.status for c in result.a.contigs}
+        return result
+
+    def clear_comparison(self) -> None:
+        self.diff = None
+        self.diff_path = None
+        self.diff_status = {}
 
     def set_reference(
         self,

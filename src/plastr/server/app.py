@@ -267,6 +267,10 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                         "deg_end": right,
                         "circular": g.is_circular(name),
                         "ref_hits": segment.ref_hits,
+                        # Present only when a comparison is loaded, so the
+                        # payload does not grow a null field for every contig
+                        # on every graph that has never been compared.
+                        **({"diff": p.diff_status[name]} if name in p.diff_status else {}),
                         "tags": _public_tags(segment.tags),
                     }
                 )

@@ -251,6 +251,15 @@ def cmd_view(args) -> int:
         )
         if args.reference:
             _maybe_reference(project, args)
+        if getattr(args, "diff", None):
+            print(f"    comparing against {args.diff} ...")
+            result = project.set_comparison(
+                args.diff, preset=args.preset, threads=args.threads
+            )
+            counts = result.a.counts()
+            print(f"    {counts['shared']:,} shared, {counts['partial']:,} partial, "
+                  f"{counts['missing']:,} not in {os.path.basename(args.diff)}"
+                  "   (colour by 'comparison' to see them)")
 
     if not 1 <= args.port <= 65535:
         print(f"  error: --port must be between 1 and 65535, got {args.port}", file=sys.stderr)
@@ -511,6 +520,93 @@ def cmd_doctor(_args) -> int:
     return 0 if ok else 1
 
 
+def _print_diff_side(side, other_label: str) -> None:
+    counts = side.counts()
+    print(f"\n  {side.label}")
+    print("  " + "-" * 56)
+    print(f"    contigs                        {side.num_contigs:>12,}")
+    print(f"    total length                   {_human(side.total_length):>12}")
+    print(f"    also in {other_label[:20]:<22}{_human(side.shared_bases):>12}"
+          f"  ({100.0 * side.shared_fraction:.2f} %)")
+    print(f"    not in {other_label[:20]:<23}{_human(side.unique_bases):>12}")
+    print(f"    contigs shared / partial / missing"
+          f"{counts['shared']:>7,} /{counts['partial']:>6,} /{counts['missing']:>6,}")
+    if side.without_sequence:
+        print(f"    contigs without sequence       {side.without_sequence:>12,}"
+              "   (not compared)")
+
+    gone = side.missing_components()
+    if gone:
+        print(f"\n    Components not fully in {other_label}")
+        print("    " + "-" * 54)
+        for comp in gone[:12]:
+            shape = "circular" if comp.circular else "linear"
+            print(f"    ! {len(comp.contigs):>3} contig(s)  {_human(comp.length):>10}"
+                  f"  {shape:<9} {comp.status:<8}"
+                  f" {100.0 * comp.covered_fraction:5.1f} % covered")
+        if len(gone) > 12:
+            print(f"      ... and {len(gone) - 12} more")
+
+    rows = side.missing_contigs()
+    if rows:
+        print(f"\n    Longest contigs not fully in {other_label}")
+        print("    " + "-" * 54)
+        for c in rows[:15]:
+            print(f"    {c.status:<8} {c.name[:26]:<26} {_human(c.length):>10}"
+                  f" {100.0 * c.covered_fraction:5.1f} % covered")
+        if len(rows) > 15:
+            print(f"      ... and {len(rows) - 15} more")
+
+
+def cmd_diff(args) -> int:
+    """Compare two assemblies by content: what is in one and not the other."""
+    from .core.analysis.diff import diff_graphs
+
+    projects = []
+    for path in (args.a, args.b):
+        project = Project()
+        project.load(path)
+        summary = project.graph.summary() if project.graph else {}
+        print(f"  loaded {path}: {summary.get('segments', 0):,} segments, "
+              f"{_human(summary.get('total_length'))}")
+        projects.append(project)
+
+    label_a = args.label_a or os.path.splitext(os.path.basename(args.a))[0]
+    label_b = args.label_b or os.path.splitext(os.path.basename(args.b))[0]
+    if label_a == label_b:
+        label_a, label_b = f"{label_a} (1)", f"{label_b} (2)"
+
+    print(f"\n  comparing sequence, {args.preset} ...")
+    result = diff_graphs(
+        projects[0].graph, projects[1].graph,
+        label_a=label_a, label_b=label_b,
+        path_a=args.a, path_b=args.b,
+        preset=args.preset,
+        min_identity=args.min_identity,
+        threads=args.threads,
+        shared_fraction=args.shared_fraction,
+        present_fraction=args.present_fraction,
+    )
+
+    _print_diff_side(result.a, label_b)
+    _print_diff_side(result.b, label_a)
+
+    if args.json:
+        import json
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(result.to_dict(), fh, indent=2)
+        print(f"\n  json written to {args.json}")
+
+    if args.html:
+        from .core.report import build_diff_report
+        html = build_diff_report(result)
+        with open(args.html, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        print(f"  report written to {args.html}")
+
+    return 0
+
+
 def cmd_compare(args) -> int:
     """Evaluate several assemblies side by side, QUAST-style."""
     from .core.analysis.metrics import compare_metrics
@@ -695,6 +791,8 @@ def build_parser() -> argparse.ArgumentParser:
         "Binding elsewhere exposes an unauthenticated API that can read and "
         "write files as you -- only do it on a network you trust",
     )
+    p_view.add_argument("--diff", metavar="OTHER.gfa",
+                        help="compare against another assembly and colour by what it lacks")
     p_view.add_argument("--port", type=int, default=8781, help="port to listen on")
     p_view.add_argument("--no-browser", action="store_true", help="do not open a browser")
     p_view.add_argument(
@@ -765,6 +863,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
     p_cmp.add_argument("--html", help="write a comparison report here")
     p_cmp.set_defaults(func=cmd_compare)
+
+    p_diff = sub.add_parser(
+        "diff", help="compare two assemblies by content: what is in one and not the other")
+    p_diff.add_argument("a", help="first assembly")
+    p_diff.add_argument("b", help="second assembly")
+    p_diff.add_argument("--label-a", help="name for the first assembly in the report")
+    p_diff.add_argument("--label-b", help="name for the second assembly in the report")
+    p_diff.add_argument("--preset", default="asm10", help="minimap2 preset (default asm10)")
+    p_diff.add_argument("--min-identity", type=float, default=0.0, metavar="F",
+                        help="ignore alignments below this identity, 0-1")
+    p_diff.add_argument("--shared-fraction", type=float, default=0.95, metavar="F",
+                        help="covered at least this much counts as shared (default 0.95)")
+    p_diff.add_argument("--present-fraction", type=float, default=0.10, metavar="F",
+                        help="below this counts as missing rather than partial (default 0.10)")
+    p_diff.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
+    p_diff.add_argument("--html", help="write a comparison report here")
+    p_diff.add_argument("--json", help="write the full comparison as JSON here")
+    p_diff.set_defaults(func=cmd_diff)
 
     p_doc = sub.add_parser("doctor", help="check that everything is installed")
     p_doc.set_defaults(func=cmd_doctor)

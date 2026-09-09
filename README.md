@@ -190,6 +190,7 @@ the colours currently mean.
 | **length** | A ramp over contig length |
 | **connected component** | One colour per component |
 | **scaffold (GFA path)** | One colour per `P`-line, so the contigs the assembler says are one molecule read as one molecule. Contigs in no path stay grey, so what is scaffolded and what is not shows at a glance |
+| **comparison** | Green, amber and red for shared, partly missing and absent, once a second assembly is loaded with `--diff` |
 | **random per component** | As above, with unrelated hues |
 | **reference chromosome** | Which reference sequence each part aligned to, painted as sub-spans along the contig |
 | **search / BLAST hit** | Where your query hit, painted along the contig; optionally in rainbow order by position in the query |
@@ -279,7 +280,8 @@ well as it fits a screen.
 | `plastr qc` | Quality report, with reference evaluation if you give it one |
 | `plastr scaffold` | Break misassemblies, scaffold, export |
 | `plastr search` | Find a sequence in the assembly |
-| `plastr compare` | Several assemblies side by side |
+| `plastr compare` | Several assemblies side by side, statistic by statistic |
+| `plastr diff` | Two assemblies compared **by content**: what one has that the other does not |
 | `plastr export` | Write the graph, per-contig CSV and report |
 | `plastr doctor` | Check what is installed |
 
@@ -296,6 +298,44 @@ plastr search assembly.gfa --query gene.fasta
 
 # Two assemblers, one reference, side by side
 plastr compare spades.gfa mine.gfa -r reference.fasta --html compare.html
+
+# What does this isolate carry that the other one does not?
+plastr diff isolate_A.gfa isolate_B.gfa --html gained_and_lost.html
+```
+
+### Comparing two assemblies by content
+
+`plastr compare` answers "which assembly is better". It cannot answer "what did
+I gain, and what did I lose", because two assemblies with identical N50 and
+identical total length can still disagree about a whole plasmid.
+
+`plastr diff` aligns every contig to the whole of the other assembly and scores
+it by how much of it that assembly covers. Coverage is counted **per base**, so
+a contig hit six times over the same third of itself does not read as present,
+and alignments are deliberately not split at long indels, so a contig whose
+middle the other assembly lacks reads as partial rather than shared.
+
+Both directions are reported, because neither answers the question alone.
+
+The result worth having is not the percentage but the list: the contigs one
+assembly has and the other does not, and above all the **connected components
+that never align at all**. On a pair of isolates that is a plasmid one carries
+and the other does not — the thing no table of contiguity statistics can show,
+and the reason this is useful for mobile elements and small contigs.
+
+```
+    Components not fully in isolate_B
+    ------------------------------------------------------
+    !   1 contig(s)    52.00 kb  circular  missing    0.0 % covered
+    !   1 contig(s)     4.10 kb  linear    missing    0.0 % covered
+```
+
+To see it rather than read it, load the comparison in the studio and colour by
+it — shared contigs go green, partly-missing amber, and the ones the other
+assembly does not have at all go red:
+
+```bash
+plastr view isolate_A.gfa --diff isolate_B.gfa
 ```
 
 ---

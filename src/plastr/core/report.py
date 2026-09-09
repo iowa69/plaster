@@ -26,11 +26,12 @@ from typing import Any, Mapping, Sequence
 
 from .analysis.metrics import AssemblyMetrics, compare_metrics
 
-__all__ = ["build_report", "write_report", "render_charts"]
+__all__ = ["build_report", "build_diff_report", "write_report", "render_charts"]
 
 DASH = "–"
 
 TEMPLATE_NAME = "report.html.j2"
+DIFF_TEMPLATE_NAME = "diff.html.j2"
 
 # Colours used both by the CSS and by the generated SVG, kept here so the two
 # never drift apart.
@@ -1114,6 +1115,106 @@ def _environment():
     env.filters["fmt_bp"] = fmt_bp
     env.filters["fmt_span"] = fmt_span
     return env
+
+
+def svg_diff_bar(side: Any, width: int = 520, height: int = 46) -> str:
+    """One assembly as a bar: how much of it the other one has.
+
+    The single number people quote is the shared fraction, and on its own it
+    hides the shape of the disagreement -- half a percent missing spread over
+    every contig is a different problem from half a percent that is one
+    plasmid. Splitting the bar by contig status shows which it is.
+    """
+    total = getattr(side, "total_length", 0) or 0
+    if total <= 0:
+        return _empty_chart("nothing to compare", height=height, width=width)
+
+    shared = max(0, getattr(side, "shared_bases", 0))
+    partial = max(0, getattr(side, "partial_bases", 0))
+    missing = max(0, getattr(side, "missing_bases", 0))
+    # `shared_bases` counts covered bases wherever they are, including inside
+    # partial contigs, so the segments have to be derived rather than summed or
+    # the bar overflows its own total.
+    partial_uncovered = max(0, partial - max(0, partial - (total - shared - missing)))
+    covered = min(shared, total)
+    parts = [
+        ("in both", covered, "#3d8f5b"),
+        ("partly missing", max(0, min(partial_uncovered, total - covered)), "#d99a2b"),
+        ("only here", max(0, total - covered - partial_uncovered), "#c4553d"),
+    ]
+
+    x = 0.0
+    body = []
+    for label, value, colour in parts:
+        if value <= 0:
+            continue
+        w = width * (value / total)
+        body.append(
+            f'<rect x="{_round(x)}" y="0" width="{_round(w)}" height="{height - 20}" '
+            f'fill="{colour}"><title>{_e(label)}: {fmt_int(value)} bp</title></rect>'
+        )
+        if w > 54:
+            body.append(
+                f'<text x="{_round(x + w / 2)}" y="{height - 30}" text-anchor="middle" '
+                f'fill="#ffffff" font-size="11">{_e(fmt_bp(value))}</text>'
+            )
+        x += w
+
+    legend = []
+    lx = 0
+    for label, value, colour in parts:
+        if value <= 0:
+            continue
+        legend.append(
+            f'<rect x="{lx}" y="{height - 13}" width="9" height="9" fill="{colour}"/>'
+            f'<text x="{lx + 13}" y="{height - 5}" font-size="10" fill="#555">{_e(label)}</text>'
+        )
+        lx += 22 + 6 * len(label)
+
+    return (
+        f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" '
+        f'style="max-width:{width}px" role="img" '
+        f'xmlns="http://www.w3.org/2000/svg">{"".join(body)}{"".join(legend)}</svg>'
+    )
+
+
+def build_diff_report(diff: Any, title: str = "Plastr comparison") -> str:
+    """Render the two-assembly content comparison as a standalone page."""
+    if diff is None:
+        raise ValueError("build_diff_report() needs a GraphDiff")
+
+    def side(s: Any, other_label: str) -> dict:
+        return {
+            "label": s.label,
+            "path": s.path,
+            "other": other_label,
+            "num_contigs": s.num_contigs,
+            "total_length": s.total_length,
+            "shared_bases": s.shared_bases,
+            "unique_bases": s.unique_bases,
+            "missing_bases": s.missing_bases,
+            "partial_bases": s.partial_bases,
+            "shared_percent": 100.0 * s.shared_fraction,
+            "counts": s.counts(),
+            "without_sequence": s.without_sequence,
+            "bar": svg_diff_bar(s),
+            "components": [c.to_dict() for c in s.missing_components()[:60]],
+            "components_more": max(0, len(s.missing_components()) - 60),
+            "contigs": [c.to_dict() for c in s.missing_contigs()[:400]],
+            "contigs_more": max(0, len(s.missing_contigs()) - 400),
+        }
+
+    context = {
+        "title": title,
+        "generated": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").strip(),
+        "preset": diff.preset,
+        "shared_fraction": 100.0 * diff.shared_fraction,
+        "present_fraction": 100.0 * diff.present_fraction,
+        "min_identity": diff.min_identity,
+        "a": side(diff.a, diff.b.label),
+        "b": side(diff.b, diff.a.label),
+    }
+    return _environment().get_template(DIFF_TEMPLATE_NAME).render(**context)
 
 
 def build_report(

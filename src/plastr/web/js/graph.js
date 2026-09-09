@@ -535,6 +535,8 @@ export class GraphModel {
         degEnd: Number(s.deg_end) || 0,
         circular: !!s.circular,
         closed,
+        // Verdict from a loaded comparison; absent when none is loaded.
+        diff: s.diff || null,
         refHits: Array.isArray(s.ref_hits) ? s.ref_hits : [],
         // Filled in by `determineContiguity`; null while no search is active.
         contiguity: null,

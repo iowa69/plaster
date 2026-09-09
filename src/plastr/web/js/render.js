@@ -342,6 +342,34 @@ export class ColourMapper {
         return this;
       }
 
+      case 'diff': {
+        // What a second assembly does and does not have. The one colour that
+        // matters is the missing one: those contigs are the answer to "what did
+        // I gain", and on a pair of isolates they are usually a plasmid.
+        const ORDER = ['shared', 'partial', 'missing'];
+        const COLOURS = ['#3d8f5b', '#d99a2b', '#c4553d'];
+        this.palette = [grey].concat(COLOURS);
+        const counts = [0, 0, 0];
+        let compared = 0;
+        for (const s of graph.segments) {
+          const at = ORDER.indexOf(s.diff);
+          this.segPal[s.idx] = at < 0 ? 0 : at + 1;
+          if (at >= 0) { counts[at]++; compared++; }
+        }
+        this.legend = compared ? {
+          type: 'cat',
+          label: 'compared with another assembly',
+          items: ORDER.map((name, i) => ({
+            colour: COLOURS[i],
+            label: `${name} · ${counts[i]} contig${counts[i] === 1 ? '' : 's'}`,
+          })).filter((it, i) => counts[i] > 0).concat(
+            compared < graph.segments.length
+              ? [{ colour: grey, label: `${graph.segments.length - compared} not compared` }]
+              : []),
+        } : { type: 'note', label: 'load a comparison to use this', text: 'plastr view A.gfa --diff B.gfa' };
+        return this;
+      }
+
       case 'path': {
         // Which scaffold each contig belongs to. A GFA path is the assembler's
         // own statement that these contigs are one molecule, and it is the
