@@ -241,6 +241,10 @@ export const DEFAULT_PARAMS = Object.freeze({
   linkRestFrac: 0.25,
   // Keeps a long contig reading as a smooth sweep rather than a squiggle.
   bendStrength: 0.90,
+  // How firmly a closed molecule is held to a circle. Strong enough to survive
+  // repulsion and the link springs, weak enough that dragging a contig still
+  // deforms the ring under the pointer rather than fighting it.
+  ringStrength: 0.35,
   // Curvature stiffness, applied over triples of consecutive vertices. This is
   // what lets a polyline carry many vertices without buckling, so long contigs
   // can bend into sweeping curves instead of being held straight by starving
@@ -299,6 +303,15 @@ export class LayoutEngine {
     this._preY = new Float32Array(this.nParticles);
     this.segP0 = d.segP0; this.segK = d.segK;
     this.segRest = d.segRest; this.segLen = d.segLen; this.segComp = d.segComp;
+    // A closed contig's polyline is a loop: its last vertex neighbours its
+    // first. Without that the ring is held by nothing and the curvature term
+    // straightens it back into a strand.
+    this.segClosed = d.segClosed || new Uint8Array(this.nSegments);
+    // Per segment: is it part of a closed molecule, and what radius should
+    // that ring have? Folded into per-component arrays by _buildComponentMap,
+    // which owns the dense component numbering.
+    this.segRing = d.segRing || null;
+    this.segRingRadius = d.segRingRadius || null;
     this.linkFrom = d.linkFrom; this.linkTo = d.linkTo;
     this.linkFromEnd = d.linkFromEnd; this.linkToEnd = d.linkToEnd;
     this.nLinks = this.linkFrom ? this.linkFrom.length : 0;
@@ -345,6 +358,18 @@ export class LayoutEngine {
     this._gcx = new Float64Array(this._nComp);
     this._gcy = new Float64Array(this._nComp);
     this._gcn = new Int32Array(this._nComp);
+
+    // Fold the per-segment ring flags onto the dense component numbering.
+    this.compRing = new Uint8Array(this._nComp);
+    this.compRadius = new Float64Array(this._nComp);
+    if (this.segRing && this.segRingRadius) {
+      for (let s = 0; s < this.nSegments; s++) {
+        if (!this.segRing[s]) continue;
+        const c = this._particleComp[this.segP0[s]];
+        this.compRing[c] = 1;
+        this.compRadius[c] = this.segRingRadius[s];
+      }
+    }
   }
 
   _componentCount() { return this._nComp || 1; }
@@ -566,8 +591,14 @@ export class LayoutEngine {
       for (let s = 0; s < nSegments; s++) {
         const p0 = segP0[s], k = segK[s];
         if (k < 3) continue;
-        for (let i = 1; i + 1 < k; i++) {
-          const a = p0 + i - 1, b = p0 + i, c = p0 + i + 1;
+        // A loop has a turn at every vertex, including the two either side of
+        // the seam; skipping those leaves a visible corner where the ring
+        // closes.
+        const closed = this.segClosed[s];
+        const first = closed ? 0 : 1;
+        const last = closed ? k - 1 : k - 2;
+        for (let i = first; i <= last; i++) {
+          const a = p0 + (i - 1 + k) % k, b = p0 + i, c = p0 + (i + 1) % k;
           const mx = (px[a] + px[c]) * 0.5;
           const my = (py[a] + py[c]) * 0.5;
           const ux = (mx - px[b]) * kc;
@@ -578,6 +609,40 @@ export class LayoutEngine {
           if (mobile[a]) { fx[a] -= ux; fy[a] -= uy; }
           if (mobile[c]) { fx[c] -= ux; fy[c] -= uy; }
         }
+      }
+    }
+
+    /* --- 3c. hold closed molecules open as rings ------------------------ */
+    // A circular molecule has no intrinsic 2D shape -- every drawing of the
+    // loop is equally true -- so the layout may as well pick the one that says
+    // "this is circular" at a glance. Left to itself a ring of contigs is
+    // neutrally stable: bending it costs nothing, so it crumples into a blob
+    // that hides the one fact worth showing. This pulls each vertex towards the
+    // radius the loop's own length implies, which restores the shape without
+    // pinning anything: links, repulsion and dragging all still act.
+    const kr = P.ringStrength || 0;
+    if (kr > 0 && this.compRing && this.compRadius) {
+      const nComp = this._componentCount();
+      const cxs = this._gcx, cys = this._gcy, cns = this._gcn;
+      cxs.fill(0); cys.fill(0); cns.fill(0);
+      for (let i = 0; i < nParticles; i++) {
+        const c = this._compOfParticle(i);
+        cxs[c] += px[i]; cys[c] += py[i]; cns[c]++;
+      }
+      for (let c = 0; c < nComp; c++) if (cns[c]) { cxs[c] /= cns[c]; cys[c] /= cns[c]; }
+      for (let i = 0; i < nParticles; i++) {
+        if (!mobile[i]) continue;
+        const c = this._compOfParticle(i);
+        if (!this.compRing[c]) continue;
+        const target = this.compRadius[c];
+        if (!(target > 0)) continue;
+        const dx = px[i] - cxs[c];
+        const dy = py[i] - cys[c];
+        const r = Math.hypot(dx, dy);
+        if (r < 1e-6) continue;
+        const f = kr * (target - r) / r;
+        fx[i] += dx * f;
+        fy[i] += dy * f;
       }
     }
 
@@ -640,8 +705,13 @@ export class LayoutEngine {
         const p0 = segP0[s], k = segK[s];
         if (k < 2) continue;
         const r = segRest[s];
-        for (let i = 0; i + 1 < k; i++) {
-          const a = p0 + i, b = a + 1;
+        // One more bond on a closed contig, joining its last vertex back to its
+        // first. That single constraint is what holds a circular molecule shut:
+        // its self-link is deliberately kept out of the spring set, so without
+        // this the ring has nothing to close it and unrolls into a strand.
+        const bonds = this.segClosed[s] ? k : k - 1;
+        for (let i = 0; i < bonds; i++) {
+          const a = p0 + i, b = p0 + ((i + 1) % k);
           const ma = mobile[a], mb = mobile[b];
           if (!ma && !mb) continue;
           let dx = px[b] - px[a];

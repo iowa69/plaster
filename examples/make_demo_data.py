@@ -132,6 +132,23 @@ def write_bacterium(outdir: str) -> tuple[str, int, int]:
         if circular and first is not None and previous is not None and previous != first:
             links.append((previous, "+", first, "+"))
 
+    # Two finished replicons, to show what a closed molecule looks like next to
+    # a draft one. A complete circular plasmid assembles into a single contig
+    # whose two ends join -- a self-link in GFA -- and that is the commonest
+    # circular molecule anyone opens a graph viewer to confirm.
+    closed = emit("plasmid_closed", random_seq(rng, 41_000), background * 1.15)
+    links.append((closed, "+", closed, "+"))
+
+    # And one assembled as a clean cycle of several contigs, with nothing else
+    # attached: the other shape circularity comes in.
+    ring = []
+    for i in range(7):
+        counter += 1
+        ring.append(emit(f"ring_{i + 1}", random_seq(rng, rng.randint(3_000, 14_000)),
+                         rng.gauss(background, 2.0)))
+    for i, node in enumerate(ring):
+        links.append((node, "+", ring[(i + 1) % len(ring)], "+"))
+
     path = os.path.join(outdir, "bacterium.gfa")
     lines = ["H\tVN:Z:1.0"]
     for name, seq, depth in segments:

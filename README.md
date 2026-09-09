@@ -22,18 +22,17 @@
 
 ---
 
-Plastr exists because the two tools everyone reaches for after an assembly
-answer different halves of the same question. Bandage shows you the graph but
-cannot tell you whether it is right, and cannot produce a better assembly.
-QUAST tells you what is wrong but you cannot see it or fix it. Plastr does
-both, and then lets you act on what you found: break the misassembled contigs,
-order and orient the rest against a reference, fill the gaps with real sequence
-recovered from the graph, and export scaffolds plus a matching AGP.
+Plastr exists because the two kinds of tool everyone reaches for after an
+assembly answer different halves of the same question. A graph viewer shows you
+the assembly but cannot tell you whether it is right, and cannot produce a
+better one. An evaluator like QUAST tells you what is wrong but you cannot see
+it or fix it. Plastr does both, and then lets you act on what you found: break
+the misassembled contigs, order and orient the rest against a reference, fill
+the gaps with real sequence recovered from the graph, and export scaffolds plus
+a matching AGP.
 
-The name is the British word for a sticking plaster, which is what this does to
-your assembly, and a nod to [Bandage](https://rrwick.github.io/Bandage/) —
-whose job it half inherits, and whose drawing conventions it follows on purpose
-so that a Plastr picture reads the way you already expect.
+The name is the British word for a sticking plaster, which is more or less what
+this does to your assembly.
 
 ---
 
@@ -89,7 +88,7 @@ without it. The demo builds two datasets in `examples/demo/`:
 | File | What it is |
 |---|---|
 | `assembly.gfa` + `reference.fasta` | Ten contigs with **known** errors planted in them — one inversion, one relocation, one translocation, one contig with no reference match. Use this to check that the numbers are right. |
-| `bacterium.gfa` | 230 segments, 1.76 Mb: a chromosome plus three plasmids, with collapsed repeats and bubbles. Nothing planted — this one is for looking at. |
+| `bacterium.gfa` | 238 segments, 1.86 Mb: a chromosome plus plasmids, with collapsed repeats and bubbles, and two finished circular replicons among them. Nothing planted — this one is for looking at. |
 
 **2. Open the graph.**
 
@@ -143,19 +142,22 @@ reference at the same time.
 
 ### How the graph is drawn
 
-Each segment is one polyline, drawn the way Bandage draws it:
+Each segment is one polyline, drawn to the conventions a graph viewer is read
+by:
 
 - **Length is proportional to sequence length.** The scale is calibrated per
   graph so the mean contig comes out a readable size, which is what keeps the
   same picture legible for a 40 kb phage and a 5 Mb chromosome.
-- **Width follows read depth**, on Bandage's curve — a contig at four times the
-  mean depth is about 1.5× the mean width, not four times it, so one runaway
-  repeat cannot flatten everything else.
+- **Width follows read depth**, but damped — a contig at four times the mean
+  depth is about 1.5× the mean width, not four times it, so one runaway repeat
+  cannot flatten everything else.
 - **Edges leave a contig along its own direction**, as tangent-continuing
   curves, which is what makes joined contigs read as one flowing strand instead
   of bars wired together.
-- **A circular contig's own link bows out sideways**, so you can see it rather
-  than having it hidden underneath the contig.
+- **A closed molecule is drawn as a ring.** A complete circular plasmid — one
+  contig whose two ends join, or several joined nose to tail — comes out round,
+  because that is the fact you opened the viewer to confirm and a loop drawn as
+  a straight bar hides it.
 - **Separate components are packed into rows** — the big one first, the small
   ones underneath — instead of being scattered through each other.
 
@@ -175,7 +177,7 @@ the colours currently mean.
 |---|---|
 | **random per segment** | A distinct stable hue per contig — the default, and the best way to see where one contig ends and the next begins |
 | **uniform** | One colour for everything |
-| **depth (coverage)** | A ramp over read depth. The range defaults to the **first and third quartiles**, as Bandage does, so a single 500× repeat cannot squeeze every ordinary contig into one end of the ramp; anything outside clamps |
+| **depth (coverage)** | A ramp over read depth. The range defaults to the **first and third quartiles**, so a single 500× repeat cannot squeeze every ordinary contig into one end of the ramp; anything outside clamps |
 | **GC content** | A ramp over GC fraction |
 | **length** | A ramp over contig length |
 | **connected component** | One colour per component |
@@ -199,8 +201,9 @@ Large graphs are easier to read in pieces. **Graph scope** decides what is drawn
 | **nodes within a depth range** | Show only contigs in a depth band — a quick way to isolate collapsed repeats or low-coverage junk |
 | **one connected component** | Draw a single component |
 
-An edge is drawn only when both its contigs are in scope, which is Bandage's
-rule. If the result is still larger than **Max nodes drawn**, Plastr grows
+An edge is drawn only when both its contigs are in scope, so the picture never
+implies a join to something you cannot see. If the result is still larger than
+**Max nodes drawn**, Plastr grows
 outward from the scope's own contigs, so what you get stays connected — it does
 *not* keep the longest contigs and hand you a field of unconnected fragments.
 The panel always says what it dropped and why.
@@ -223,10 +226,9 @@ panel then shows how many contigs, their total length and mean depth, and can
 contig's centre and at a near-constant size as you zoom. A label appears only
 where the contig is long enough on screen to hold it.
 
-**Settings** exposes the drawing constants Bandage keeps in its settings dialog
-— node width, the two depth-to-width shaping parameters, node length per
-megabase and whether it is calibrated automatically, outlines, text size. They
-persist between sessions.
+**Settings** exposes the drawing constants — node width, the two depth-to-width
+shaping parameters, node length per megabase and whether it is calibrated
+automatically, outlines, text size. They persist between sessions.
 
 ### Keyboard and mouse
 
@@ -294,11 +296,11 @@ plastr compare spades.gfa mine.gfa -r reference.fasta --html compare.html
 ### Judges the assembly
 
 Reference-free: contigs, N50/L50, N75, NG50, auN, GC, depth distribution, dead
-ends, connected components, circular contigs, and the numbers Bandage's *Graph
-information* dialog reports — edge overlap range, total length corrected for
-overlaps, percentage of dead ends, largest component and its share, length held
-in orphaned contigs, the length quartiles, and an estimate of how much sequence
-the assembly really represents.
+ends, connected components, circular contigs, and the graph-level numbers that
+tell you what kind of assembly you have — edge overlap range, total length
+corrected for overlaps, percentage of dead ends, largest component and its
+share, length held in orphaned contigs, the length quartiles, and an estimate of
+how much sequence the assembly really represents.
 
 Reference-based, once you drop a reference FASTA in: genome fraction,
 duplication ratio, NA50/NGA50, mismatches and indels per 100 kb, and
@@ -366,10 +368,11 @@ Plastr is checked against the tools it replaces, on real bacterial
 assemblies rather than on data it generated itself. Full numbers and commands
 are in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
-**Against Bandage**, on two real graphs (2.88 Mb and 5.45 Mb, with 94 bp and
-127 bp overlaps): node count, edge count, total length, dead ends, connected
-components, N50, longest node, largest component and median depth all agree
-exactly.
+**Against an established assembly-graph viewer**, on two real graphs (2.88 Mb
+and 5.45 Mb, with 94 bp and 127 bp overlaps): node count, edge count, total
+length, dead ends, connected components, N50, longest node, largest component
+and median depth all agree exactly. The tool and the commands are named in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 **Against QUAST**, on six closed *Klebsiella pneumoniae* genomes: contig
 counts, total length, largest contig, GC, N50, NG50, L50, auN, genome fraction,

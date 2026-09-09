@@ -143,3 +143,81 @@ test('a link never rests further apart than the contigs it joins are long', () =
   const longest = Math.max(...g.segments.map((s) => s.drawLen));
   for (const gap of gaps) assert.ok(gap < longest, `gap ${gap.toFixed(1)} vs contig ${longest.toFixed(1)}`);
 });
+
+test('a contig that closes on itself is drawn as a ring', () => {
+  // A complete circular plasmid assembles into one contig whose ends join. The
+  // whole point of looking at it is to see that it closes, so it has to come
+  // out round rather than as a straight bar with a loop tacked on.
+  const segments = [{
+    name: 'plasmid', length: 40_000, depth: 30, gc: 0.5, component: 0,
+    deg_start: 1, deg_end: 1, circular: true, ref_hits: [],
+  }];
+  const links = [{ from: 'plasmid', to: 'plasmid', from_orient: '+', to_orient: '+', overlap: 0 }];
+  const { g, eng } = build({ segments, links });
+
+  const seg = g.segments[0];
+  assert.ok(seg.closed, 'a self-linked contig must be marked closed');
+  assert.ok(seg.k >= 12, `a ring needs vertices to be round; got ${seg.k}`);
+
+  run(eng);
+
+  const pts = [];
+  for (let i = 0; i < seg.k; i++) pts.push([eng.px[seg.p0 + i], eng.py[seg.p0 + i]]);
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  const rs = pts.map((p) => Math.hypot(p[0] - cx, p[1] - cy));
+  const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+  const cv = Math.sqrt(rs.reduce((a, b) => a + (b - mean) ** 2, 0) / rs.length) / mean;
+  assert.ok(cv < 0.15, `not round: radial CV ${cv.toFixed(3)}`);
+
+  // And the ring must close: the seam is as tight as any other join.
+  const seam = Math.hypot(
+    eng.px[seg.p0] - eng.px[seg.p0 + seg.k - 1],
+    eng.py[seg.p0] - eng.py[seg.p0 + seg.k - 1],
+  );
+  const step = seg.drawLen / seg.k;
+  assert.ok(seam < step * 2, `ring left open: seam ${seam.toFixed(1)} vs step ${step.toFixed(1)}`);
+});
+
+test('contigs joined nose to tail come out as a circle', () => {
+  // The other shape circularity arrives in: a closed molecule assembled in
+  // several pieces. A ring of contigs is neutrally stable, so without a shape
+  // prior it crumples into a blob and hides the fact that it closes.
+  const n = 8;
+  const segments = Array.from({ length: n }, (_, i) => ({
+    name: 'r' + i, length: 9_000, depth: 30, gc: 0.5, component: 0,
+    deg_start: 1, deg_end: 1, circular: false, ref_hits: [],
+  }));
+  const links = Array.from({ length: n }, (_, i) => ({
+    from: 'r' + i, to: 'r' + ((i + 1) % n), from_orient: '+', to_orient: '+', overlap: 0,
+  }));
+  const { g, eng } = build({ segments, links });
+  run(eng);
+
+  const pts = [];
+  for (let i = 0; i < eng.nParticles; i++) pts.push([eng.px[i], eng.py[i]]);
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  const rs = pts.map((p) => Math.hypot(p[0] - cx, p[1] - cy));
+  const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+  const cv = Math.sqrt(rs.reduce((a, b) => a + (b - mean) ** 2, 0) / rs.length) / mean;
+  assert.ok(cv < 0.2, `ring of contigs did not stay circular: radial CV ${cv.toFixed(3)}`);
+  assert.ok(mean > 0, 'ring collapsed to a point');
+});
+
+test('a component that is not a closed molecule is left alone', () => {
+  // The ring prior must not reshape ordinary graphs: a branching component has
+  // a real shape of its own and inventing a circle for it would be a lie.
+  const segments = ['a', 'b', 'c', 'd', 'e'].map((nm) => ({
+    name: nm, length: 9_000, depth: 30, gc: 0.5, component: 0,
+    deg_start: 1, deg_end: 1, circular: false, ref_hits: [],
+  }));
+  // A star: every contig hangs off 'a'. Nothing here is a cycle.
+  const links = ['b', 'c', 'd', 'e'].map((nm) => ({
+    from: 'a', to: nm, from_orient: '+', to_orient: '+', overlap: 0,
+  }));
+  const { g } = build({ segments, links });
+  const walk = g._walkComponent(g.components[0]);
+  assert.equal(walk.ring, false, 'a tree must not be treated as a ring');
+  for (const seg of g.segments) assert.ok(!seg.closed);
+});

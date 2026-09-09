@@ -977,6 +977,20 @@ export class Renderer {
       ctx.lineTo(x + 0.01, y);
       return;
     }
+    // A closed contig is a ring: its vertices wrap, so the spline runs all the
+    // way round and the path is closed rather than stopping one vertex short
+    // and leaving a notch at the seam. It has no ends, so nothing is trimmed
+    // for an arrowhead either.
+    if (seg.closed && k >= 3) {
+      const X = (i) => px[p0 + (i % k)] * s + ox;
+      const Y = (i) => py[p0 + (i % k)] * s + oy;
+      ctx.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
+      for (let i = 1; i <= k; i++) {
+        ctx.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
+      }
+      ctx.closePath();
+      return;
+    }
     let ex = px[p0 + k - 1] * s + ox, ey = py[p0 + k - 1] * s + oy;
     if (trimPx > 0) {
       const bx = px[p0 + k - 2] * s + ox, by = py[p0 + k - 2] * s + oy;
@@ -1024,6 +1038,7 @@ export class Renderer {
    */
   _linkPath(ctx, l, scale) {
     const q = this._linkGeom(l, scale);
+    if (q.skip) return;
     ctx.moveTo(q.ax, q.ay);
     if (q.straight) ctx.lineTo(q.bx, q.by);
     else ctx.bezierCurveTo(q.c1x, q.c1y, q.c2x, q.c2y, q.bx, q.by);
@@ -1070,6 +1085,12 @@ export class Renderer {
 
     const ext = EDGE_EXTENSION_WORLD * scale;
 
+    // A closed contig is already drawn as a ring, so its own self-link needs no
+    // bow: the loop the reader sees IS the link. Bowing it as well draws a
+    // second arc across a circle that is already closed.
+    if (l.selfLoop && g.segments[l.a] && g.segments[l.a].closed) {
+      return { ax, ay, bx, by, straight: true, skip: true };
+    }
     if (l.selfLoop) {
       // Bow the loop off the node along the end's normal so it stays visible.
       const nx = -ady, ny = adx;
@@ -2194,6 +2215,7 @@ export class Renderer {
       const d = [];
       for (const li of scene.vlinks) {
         const q = this._linkGeom(g.links[li], scale);
+        if (q.skip) continue;
         d.push(`M${num(q.ax)} ${num(q.ay)}` + (q.straight
           ? `L${num(q.bx)} ${num(q.by)}`
           : `C${num(q.c1x)} ${num(q.c1y)} ${num(q.c2x)} ${num(q.c2y)} ${num(q.bx)} ${num(q.by)}`));

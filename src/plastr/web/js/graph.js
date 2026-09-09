@@ -86,6 +86,22 @@ export const DEFAULT_GEOM = Object.freeze({
 });
 
 /**
+ * Fewest vertices a contig that closes on itself is drawn with.
+ *
+ * A closed molecule has to read as a ring, and a ring needs enough vertices to
+ * look like one: at two it is a line whatever the layout does, at six a
+ * hexagon. Sixteen is round to the eye at any zoom a whole plasmid is viewed
+ * at, and costs nothing -- these are single contigs, not the whole graph.
+ */
+export const RING_MIN_PARTICLES = 16;
+
+/**
+ * Vertices to spread around a closed molecule assembled in several contigs, so
+ * the ring reads as a circle rather than as a polygon with a corner per contig.
+ */
+export const RING_VERTEX_BUDGET = 48;
+
+/**
  * Node-drag deformation, Bandage's constants.
  *
  * `strength` and `falloffPower` reproduce `GraphicsItemNode::shiftPoints`
@@ -361,7 +377,9 @@ export class GraphModel {
     let p = 0;
     for (const seg of this.segments) {
       seg.drawLen = drawLengthFor(seg.length, this.geom, this.perBase);
-      seg.k = particleCountFor(seg.drawLen, this.geom);
+      seg.k = seg.closed
+        ? Math.max(particleCountFor(seg.drawLen, this.geom), RING_MIN_PARTICLES)
+        : particleCountFor(seg.drawLen, this.geom);
       seg.p0 = p;
       p += seg.k;
     }
@@ -484,13 +502,26 @@ export class GraphModel {
     this.byName = new Map();
     let p = 0;
 
+    // Which contigs close on themselves. Known before the segments are built
+    // because a closed contig needs enough vertices to be drawn as a circle at
+    // all -- two vertices can only ever be a straight line, however the layout
+    // is seeded.
+    const closedNames = new Set();
+    for (let i = 0; i < rawLinks.length; i++) {
+      const l = rawLinks[i] || {};
+      if (l.from !== undefined && String(l.from) === String(l.to)) closedNames.add(String(l.from));
+    }
+
     for (let i = 0; i < rawSegs.length; i++) {
       const s = rawSegs[i] || {};
       const name = String(s.name !== undefined && s.name !== null ? s.name : 'seg_' + i);
       if (this.byName.has(name)) continue; // duplicate names would break lookups
       const length = Number.isFinite(Number(s.length)) ? Number(s.length) : 0;
       const drawLen = drawLengthFor(length, geom, this.perBase);
-      const k = particleCountFor(drawLen, geom);
+      const closed = closedNames.has(name);
+      const k = closed
+        ? Math.max(particleCountFor(drawLen, geom), RING_MIN_PARTICLES)
+        : particleCountFor(drawLen, geom);
       const depth = (s.depth === null || s.depth === undefined) ? null : Number(s.depth);
       const gc = (s.gc === null || s.gc === undefined) ? null : Number(s.gc);
       const rec = {
@@ -503,6 +534,7 @@ export class GraphModel {
         degStart: Number(s.deg_start) || 0,
         degEnd: Number(s.deg_end) || 0,
         circular: !!s.circular,
+        closed,
         refHits: Array.isArray(s.ref_hits) ? s.ref_hits : [],
         // Filled in by `determineContiguity`; null while no search is active.
         contiguity: null,
@@ -582,6 +614,7 @@ export class GraphModel {
 
     this._buildAdjacency();
     this._buildComponents();
+    this._refineRingResolution();
     this._computeStats();
     this._restorePositions(prev);
     this.updateBounds();
@@ -590,6 +623,50 @@ export class GraphModel {
   }
 
   /* ------------------------------------------------------------ internals */
+
+  /**
+   * Give contigs on a closed molecule enough vertices to follow its curve.
+   *
+   * A ring is drawn as the contigs around it, so with two vertices each they
+   * are chords and the molecule comes out as a polygon: seven contigs make a
+   * heptagon, which reads as a shape rather than as a circle. Enough vertices
+   * between them and the ring is round.
+   *
+   * Only whole closed molecules qualify, so this costs nothing on an ordinary
+   * graph, and it runs after components are known -- which is why it is a
+   * second pass rather than part of building the segments.
+   */
+  _refineRingResolution() {
+    let changed = false;
+    for (const comp of this.components) {
+      const walk = this._walkComponent(comp);
+      if (!walk.ring || walk.selfLooped) continue;
+      // Spread the ring's vertex budget over its contigs by length, so a long
+      // contig curves and a stub is not given vertices it cannot use.
+      let total = 0;
+      for (const si of comp.segs) total += this.segments[si].drawLen;
+      if (!(total > 0)) continue;
+      for (const si of comp.segs) {
+        const seg = this.segments[si];
+        const share = Math.round(RING_VERTEX_BUDGET * (seg.drawLen / total));
+        const want = Math.max(seg.k, Math.min(RING_MIN_PARTICLES, Math.max(3, share)));
+        if (want !== seg.k) { seg.k = want; changed = true; }
+      }
+    }
+    if (!changed) return;
+
+    let p = 0;
+    for (const seg of this.segments) { seg.p0 = p; p += seg.k; }
+    this._reallocParticles(p);
+    for (const l of this.links) {
+      const a = this.segments[l.a];
+      const b = this.segments[l.b];
+      l.pa = endParticle(a, l.aEnd);
+      l.pb = endParticle(b, l.bEnd);
+      l.paIn = innerParticle(a, l.aEnd);
+      l.pbIn = innerParticle(b, l.bEnd);
+    }
+  }
 
   _snapshotPositions() {
     if (!this.segments.length) return null;
@@ -834,50 +911,156 @@ export class GraphModel {
   }
 
   /**
-   * Give every particle a sensible starting position: components are dropped
-   * into a coarse grid, segments spiral outwards inside their component. A good
-   * seed means the force layout converges in a few hundred iterations instead
-   * of a few thousand.
+   * Walk a component, following its links, and say whether it closes.
+   *
+   * The order is a depth-first walk from a dead end where there is one, so a
+   * contig's neighbours in the walk are its neighbours in the graph. That is
+   * what lets the seed lay the component out along its own structure instead of
+   * scattering it and asking the force model to discover the structure again.
+   *
+   * `cyclic` counts links rather than inspecting the walk: a connected
+   * component with at least as many links as contigs contains a cycle, and a
+   * tree has exactly one fewer. It is the cheap, exact test.
+   */
+  _walkComponent(comp) {
+    const segs = comp.segs;
+    const inComp = new Set(segs);
+    const links = new Set();
+    for (const si of segs) {
+      for (const e of this.adj[si] || []) {
+        if (inComp.has(e.seg)) links.add(e.link);
+      }
+    }
+
+    // Start at a dead end if the component has one, otherwise at the longest
+    // contig, so a linear component is walked end to end rather than from its
+    // middle.
+    let root = segs[0];
+    let bestDeg = Infinity;
+    for (const si of segs) {
+      const deg = (this.adj[si] || []).length;
+      const better = deg < bestDeg
+        || (deg === bestDeg && this.segments[si].drawLen > this.segments[root].drawLen);
+      if (better) { root = si; bestDeg = deg; }
+    }
+
+    const order = [];
+    const seen = new Set([root]);
+    const stack = [root];
+    while (stack.length) {
+      const u = stack.pop();
+      order.push(u);
+      // Longest neighbour last, so it is popped first and the walk follows the
+      // backbone rather than wandering off down a short bubble arm.
+      const next = (this.adj[u] || [])
+        .filter((e) => inComp.has(e.seg) && !seen.has(e.seg))
+        .sort((a, b) => this.segments[a.seg].drawLen - this.segments[b.seg].drawLen);
+      for (const e of next) { seen.add(e.seg); stack.push(e.seg); }
+    }
+    for (const si of segs) if (!seen.has(si)) order.push(si);
+
+    // Independent cycles through the component: 1 is a plain loop, 0 a tree,
+    // and a large number means a tangle whose shape is not a ring at all.
+    const excess = links.size - segs.length + 1;
+
+    // A ring seed is only right when the component really is a closed molecule:
+    // a single contig that links to itself, or contigs joined nose to tail with
+    // nothing else attached. Force a ring on a tangle and every extra link
+    // becomes a chord pulling the circle shut, which the layout then has to
+    // undo -- measurably worse than not seeding a ring at all.
+    const selfLooped = segs.length === 1
+      && (this.adj[segs[0]] || []).some((e) => e.seg === segs[0]);
+    const closedWalk = excess === 1
+      && segs.every((si) => (this.adj[si] || []).filter((e) => inComp.has(e.seg)).length === 2);
+
+    return { order, ring: selfLooped || closedWalk, selfLooped, excess };
+  }
+
+  /**
+   * Give every particle a starting position that already has the component's
+   * shape: a component containing a cycle is laid on a ring, one without on a
+   * line, each contig following the curve rather than sitting as a chord.
+   *
+   * Seeding this way is what makes a circular replicon look circular. A ring is
+   * a stable equilibrium of the force model, so once the contigs start on one
+   * they stay on it; started from a scatter, the same component settles into a
+   * knot that happens to be connected, and nothing about the picture says the
+   * molecule closes. It also converges much faster, because the layout is
+   * refining a shape rather than discovering it.
    */
   seedPositions() {
     const comps = this.components;
     if (!comps.length) return;
     const cols = Math.max(1, Math.ceil(Math.sqrt(comps.length)));
 
-    // Everything here is in drawn units, so it has to be derived from the drawn
-    // sizes rather than from fixed constants: the bp -> unit scale is
-    // calibrated per graph, so a segment can be five units long or five
-    // thousand. Seeding at a fixed radius piles every contig on top of its
-    // neighbours and leaves the force model to untangle a knot it did not need
-    // to be given.
-    const spreadOf = (comp) => {
-      const n = Math.max(1, comp.segs.length);
-      let total = 0;
-      for (const si of comp.segs) total += this.segments[si].drawLen;
-      const mean = total / n;
-      return Math.sqrt(n) * Math.max(mean, 1) * 0.75 + mean;
-    };
+    // The gap between consecutive contigs on the curve. Links rest at a
+    // fraction of a polyline step, so leaving room for one here means the seed
+    // already satisfies them and the force model has nothing to undo.
+    const gap = (this.geom.particleSpacing || 20) * 0.25;
 
-    // Cell size follows the biggest component so nothing starts on top of
-    // anything else.
+    // Everything here is in drawn units, and the bp -> unit scale is calibrated
+    // per graph, so a contig can be five units long or five thousand. The grid
+    // cell has to come from the shape each component will actually be seeded
+    // into, or components start overlapping and the force model spends its
+    // budget pulling apart a tangle it was handed.
+    const plans = comps.map((comp) => {
+      const walk = this._walkComponent(comp);
+      let perimeter = 0;
+      for (const si of walk.order) perimeter += this.segments[si].drawLen + gap;
+      // A closed molecule keeps no gap after its last contig: the walk has to
+      // meet its own start, and a spare gap would leave the ring visibly open.
+      if (walk.ring) perimeter -= walk.selfLooped ? gap : 0;
+      // A ring of this perimeter is that wide across; a line is its own length.
+      const extent = walk.ring ? perimeter / Math.PI : perimeter;
+      return { ...walk, perimeter, extent };
+    });
+
     let cell = 0;
-    for (const c of comps) cell = Math.max(cell, spreadOf(c) * 2.4 + 40);
+    for (const p of plans) cell = Math.max(cell, p.extent * 1.25 + 40);
 
-    comps.forEach((comp, ci) => {
+    plans.forEach((plan, ci) => {
+      if (!(plan.perimeter > 0)) return;
       const gx = (ci % cols) * cell;
       const gy = Math.floor(ci / cols) * cell;
-      const n = comp.segs.length;
-      // Golden-angle spiral: even coverage, no clumping.
-      const golden = Math.PI * (3 - Math.sqrt(5));
-      const spread = spreadOf(comp);
-      comp.segs.forEach((si, k) => {
-        const seg = this.segments[si];
-        const r = spread * Math.sqrt((k + 0.5) / n);
-        const a = k * golden;
-        this._placeSegment(seg, gx + Math.cos(a) * r, gy + Math.sin(a) * r, a + Math.PI / 2);
-      });
+
+      if (plan.ring) {
+        // Radius chosen so the contigs laid end to end exactly close the ring.
+        const R = plan.perimeter / (2 * Math.PI);
+        let s = 0;
+        for (const si of plan.order) {
+          const seg = this.segments[si];
+          this._placeSegmentOnRing(seg, gx, gy, R, s, plan.perimeter);
+          s += seg.drawLen + gap;
+        }
+      } else {
+        let s = -plan.perimeter / 2;
+        for (const si of plan.order) {
+          const seg = this.segments[si];
+          this._placeSegment(seg, gx + s + seg.drawLen / 2, gy, 0);
+          s += seg.drawLen + gap;
+        }
+      }
     });
     this.updateBounds();
+  }
+
+  /**
+   * Lay one contig along an arc of a ring, vertex by vertex.
+   *
+   * Placing the contig as a straight chord would leave a polygon whose corners
+   * the force model then has to round off; following the arc means the ring is
+   * already smooth, which is the point of seeding it as a ring at all.
+   */
+  _placeSegmentOnRing(seg, cx, cy, R, sStart, perimeter) {
+    // A closed contig's own last vertex is the neighbour of its first, so its
+    // vertices tile k gaps around the ring rather than k - 1 along a strand.
+    const spans = seg.closed ? seg.k : Math.max(1, seg.k - 1);
+    const step = seg.drawLen / spans;
+    for (let i = 0; i < seg.k; i++) {
+      const a = ((sStart + step * i) / perimeter) * Math.PI * 2;
+      this.px[seg.p0 + i] = cx + Math.cos(a) * R;
+      this.py[seg.p0 + i] = cy + Math.sin(a) * R;
+    }
   }
 
   /** Recompute per-segment bounding boxes (used for culling and hit tests). */
@@ -1286,6 +1469,36 @@ export class GraphModel {
    * Pack the structural data the layout worker needs. Everything is a typed
    * array so it can be transferred rather than cloned.
    */
+  /**
+   * Which components are closed molecules, and how big a ring each should be.
+   *
+   * A circular molecule carries no information about its own 2D shape: every
+   * way of drawing the loop is equally faithful, so the layout is free to pick
+   * the one a reader can actually recognise, and that is a circle. The engine
+   * uses these to hold ring components open; a chain of contigs joined nose to
+   * tail is otherwise neutrally stable and crumples for free.
+   */
+  ringComponents() {
+    // Keyed by segment, not by component. The engine builds its own dense
+    // component numbering from `segComp`, which is in segment order and need
+    // not agree with the order of `this.components`; indexing these by the
+    // latter silently applies one component's ring to another.
+    const segRing = new Uint8Array(this.segments.length);
+    const segRingRadius = new Float32Array(this.segments.length);
+    const gap = (this.geom.particleSpacing || 20) * 0.25;
+    for (const comp of this.components) {
+      const walk = this._walkComponent(comp);
+      if (!walk.ring) continue;
+      let perimeter = 0;
+      for (const si of comp.segs) perimeter += this.segments[si].drawLen + gap;
+      if (walk.selfLooped) perimeter -= gap;
+      if (!(perimeter > 0)) continue;
+      const radius = perimeter / (2 * Math.PI);
+      for (const si of comp.segs) { segRing[si] = 1; segRingRadius[si] = radius; }
+    }
+    return { segRing, segRingRadius };
+  }
+
   toLayoutArrays() {
     const n = this.segments.length;
     const segP0 = new Int32Array(n);
@@ -1293,12 +1506,21 @@ export class GraphModel {
     const segRest = new Float32Array(n);
     const segLen = new Float32Array(n);
     const segComp = new Int32Array(n);
+    // A contig that links to itself is a closed molecule. The layout has to
+    // know, because its polyline is a loop rather than a strand: the last
+    // vertex is a neighbour of the first, and nothing else would hold the ring
+    // shut once the self-link is left out of the spring set.
+    const segClosed = new Uint8Array(n);
     for (const s of this.segments) {
       segP0[s.idx] = s.p0;
       segK[s.idx] = s.k;
-      segRest[s.idx] = s.k > 1 ? s.drawLen / (s.k - 1) : s.drawLen;
+      // A closed polyline has k gaps between its k vertices, not k - 1.
+      segRest[s.idx] = s.closed
+        ? s.drawLen / Math.max(1, s.k)
+        : (s.k > 1 ? s.drawLen / (s.k - 1) : s.drawLen);
       segLen[s.idx] = s.drawLen;
       segComp[s.idx] = s.compIndex === undefined ? 0 : s.compIndex;
+      segClosed[s.idx] = s.closed ? 1 : 0;
     }
     const m = this.links.length;
     const linkFrom = new Int32Array(m);
@@ -1315,8 +1537,9 @@ export class GraphModel {
       nSegments: n,
       px: Float32Array.from(this.px),
       py: Float32Array.from(this.py),
-      segP0, segK, segRest, segLen, segComp,
+      segP0, segK, segRest, segLen, segComp, segClosed,
       linkFrom, linkTo, linkFromEnd, linkToEnd,
+      ...this.ringComponents(),
     };
   }
 
