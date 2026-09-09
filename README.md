@@ -6,9 +6,19 @@
 
 <p align="center">
   <em>A plaster for your assembly.</em><br>
-  GFA visualisation,  Assembly quality assessment, and
+  GFA visualisation, assembly quality assessment, and
   reference-guided scaffolding whose output you can actually use downstream.
 </p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#the-studio">The studio</a> ·
+  <a href="#command-line">Command line</a> ·
+  <a href="#is-it-right">Validation</a>
+</p>
+
+![The Plastr studio](docs/images/studio.png)
 
 ---
 
@@ -21,7 +31,9 @@ order and orient the rest against a reference, fill the gaps with real sequence
 recovered from the graph, and export scaffolds plus a matching AGP.
 
 The name is the British word for a sticking plaster, which is what this does to
-your assembly, and a nod to Bandage — whose job it half inherits.
+your assembly, and a nod to [Bandage](https://rrwick.github.io/Bandage/) —
+whose job it half inherits, and whose drawing conventions it follows on purpose
+so that a Plastr picture reads the way you already expect.
 
 ---
 
@@ -33,10 +45,19 @@ conda env create -f environment.yml
 conda activate plastr
 ```
 
-That is the whole install. It pulls in minimap2, mappy, BLAST and the web
+That is the whole install. It pulls in minimap2, mappy, BLAST, Node and the web
 service, and gives you the `plastr` command.
 
-### As a conda package
+> **Why conda and not pip?** `mappy` is minimap2's Python binding and ships as C
+> source, so `pip install` has to compile it and fails on any machine without a
+> C compiler. Conda takes a prebuilt one from bioconda. If you install with pip
+> and skip `mappy`, everything reference-based silently disappears — alignment,
+> misassembly detection, genome fraction, NA50/NGA50 and reference-guided
+> scaffolding — and about a third of the test suite skips. `plastr doctor` will
+> tell you if that has happened.
+
+<details>
+<summary>As a conda package</summary>
 
 A conda recipe lives in [`conda/`](conda/). Build and install it locally with:
 
@@ -49,30 +70,207 @@ conda install -c local plastr
 but has not been submitted to bioconda. Note the package is `plastr`, not
 `plaster`: the latter is already taken on PyPI and in conda's `defaults`
 channel by an unrelated Pylons library.
+</details>
 
-Check that everything is present, then generate a small demo dataset with known
-errors built into it:
+---
+
+## Getting started
+
+**1. Check the install and build the demo data.**
 
 ```bash
 plastr doctor
 python examples/make_demo_data.py
+```
+
+`doctor` reports what is present and, for anything missing, what you lose
+without it. The demo builds two datasets in `examples/demo/`:
+
+| File | What it is |
+|---|---|
+| `assembly.gfa` + `reference.fasta` | Ten contigs with **known** errors planted in them — one inversion, one relocation, one translocation, one contig with no reference match. Use this to check that the numbers are right. |
+| `bacterium.gfa` | 230 segments, 1.76 Mb: a chromosome plus three plasmids, with collapsed repeats and bubbles. Nothing planted — this one is for looking at. |
+
+**2. Open the graph.**
+
+```bash
+plastr view examples/demo/bacterium.gfa
+```
+
+Your browser opens on the drawing above. Everything else is in the sidebar.
+Nothing is computed until you ask for it, so a graph opens immediately.
+
+**3. Check whether the assembly is right.**
+
+```bash
 plastr qc examples/demo/assembly.gfa -r examples/demo/reference.fasta --preset asm5
 ```
 
-`plastr doctor` reports what is installed and, for anything missing, what
-you lose without it.
+This prints the statistics and then names each misassembly it found. On the
+demo data it should find exactly the three that were planted:
 
-## Use it
+```
+  misassemblies                          3
+    relocations                          1
+    inversions                           1
+    translocations                       1
 
-```bash
-plastr view assembly.gfa                          # open the studio
-plastr view assembly.gfa -r reference.fasta       # ...with a reference already loaded
+  ! ctg_inversion       inversion      strand flips relative to the reference
+  ! ctg_relocation      relocation     jumps 14,000 bp along chromosome (forward)
+  ! ctg_translocation   translocation  contig continues on a different reference sequence
 ```
 
-Your browser opens on the graph. Everything else is in the sidebar.
+Add `--html report.html` for the full report.
 
-The same operations run headlessly, so Plastr fits a pipeline as well as it
-fits a screen:
+**4. Fix it and scaffold it.**
+
+```bash
+plastr scaffold examples/demo/assembly.gfa -r examples/demo/reference.fasta \
+    --break-misassemblies -o results/
+```
+
+This breaks the chimeric contigs at their breakpoints, orders and orients what
+is left against the reference, fills gaps with real sequence taken from the
+graph where it can, and writes `scaffolds.fasta`, `scaffolds.agp`, `graph.gfa`,
+`segments.csv` and `report.html`.
+
+---
+
+## The studio
+
+`plastr view assembly.gfa` opens the graph; `-r reference.fasta` loads a
+reference at the same time.
+
+### How the graph is drawn
+
+Each segment is one polyline, drawn the way Bandage draws it:
+
+- **Length is proportional to sequence length.** The scale is calibrated per
+  graph so the mean contig comes out a readable size, which is what keeps the
+  same picture legible for a 40 kb phage and a 5 Mb chromosome.
+- **Width follows read depth**, on Bandage's curve — a contig at four times the
+  mean depth is about 1.5× the mean width, not four times it, so one runaway
+  repeat cannot flatten everything else.
+- **Edges leave a contig along its own direction**, as tangent-continuing
+  curves, which is what makes joined contigs read as one flowing strand instead
+  of bars wired together.
+- **A circular contig's own link bows out sideways**, so you can see it rather
+  than having it hidden underneath the contig.
+- **Separate components are packed into rows** — the big one first, the small
+  ones underneath — instead of being scattered through each other.
+
+**Rearrange** re-runs the layout over the whole graph, just your selection, or a
+single component, in force-directed, linear, circular or component-grid mode.
+Watch it settle; stop it when it looks right.
+
+Export what you see as **PNG** or **SVG**. The SVG shares its geometry with the
+on-screen painter, so the export matches the screen exactly.
+
+### Colour schemes
+
+Pick one under **Colour & style**. The legend below the picker always shows what
+the colours currently mean.
+
+| Scheme | What it shows |
+|---|---|
+| **random per segment** | A distinct stable hue per contig — the default, and the best way to see where one contig ends and the next begins |
+| **uniform** | One colour for everything |
+| **depth (coverage)** | A ramp over read depth. The range defaults to the **first and third quartiles**, as Bandage does, so a single 500× repeat cannot squeeze every ordinary contig into one end of the ramp; anything outside clamps |
+| **GC content** | A ramp over GC fraction |
+| **length** | A ramp over contig length |
+| **connected component** | One colour per component |
+| **random per component** | As above, with unrelated hues |
+| **reference chromosome** | Which reference sequence each part aligned to, painted as sub-spans along the contig |
+| **search / BLAST hit** | Where your query hit, painted along the contig; optionally in rainbow order by position in the query |
+
+![Colouring by read depth](docs/images/studio-depth.png)
+
+*Colour by depth. The auto range is the first to third quartile — the collapsed
+repeats sit above it and clamp to the top of the ramp.*
+
+### Choosing what to draw
+
+Large graphs are easier to read in pieces. **Graph scope** decides what is drawn:
+
+| Scope | Use it to |
+|---|---|
+| **the entire graph** | Draw everything |
+| **nodes around a selection** | Name some contigs and draw everything within *N* steps of them. Matching is on whole names by default; untick *Whole name only* for substring matching |
+| **nodes within a depth range** | Show only contigs in a depth band — a quick way to isolate collapsed repeats or low-coverage junk |
+| **one connected component** | Draw a single component |
+
+An edge is drawn only when both its contigs are in scope, which is Bandage's
+rule. If the result is still larger than **Max nodes drawn**, Plastr grows
+outward from the scope's own contigs, so what you get stays connected — it does
+*not* keep the longest contigs and hand you a field of unconnected fragments.
+The panel always says what it dropped and why.
+
+### Finding things
+
+Press <kbd>/</kbd>, type a contig name, press <kbd>Enter</kbd>. Every match is
+selected and framed. Separate several names with commas.
+
+### Working with a selection
+
+Click a contig to select it, <kbd>Shift</kbd>-click to add, or
+<kbd>Shift</kbd>-drag on the background to rectangle-select. The **Selection**
+panel then shows how many contigs, their total length and mean depth, and can
+**copy** or **save** their sequences as FASTA.
+
+### Labels and settings
+
+**Node labels** draws the name, length and read depth on each contig, at the
+contig's centre and at a near-constant size as you zoom. A label appears only
+where the contig is long enough on screen to hold it.
+
+**Settings** exposes the drawing constants Bandage keeps in its settings dialog
+— node width, the two depth-to-width shaping parameters, node length per
+megabase and whether it is calibrated automatically, outlines, text size. They
+persist between sessions.
+
+### Keyboard and mouse
+
+| | |
+|---|---|
+| <kbd>R</kbd> | Rearrange (re-run the layout) |
+| <kbd>F</kbd> | Fit the graph to the view |
+| <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find contigs by name |
+| <kbd>A</kbd> | Select all visible contigs |
+| <kbd>C</kbd> | Copy the selected sequences as FASTA |
+| <kbd>Del</kbd> | Delete the selected contigs |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo |
+| <kbd>Esc</kbd> | Clear the selection |
+| <kbd>?</kbd> | Show all shortcuts |
+| Wheel | Zoom, centred on the cursor |
+| Drag background | Pan |
+| Double-click a contig | Centre on it |
+
+The canvas takes keyboard focus like any other control, so arrow keys pan and
+<kbd>+</kbd>/<kbd>-</kbd> zoom once you <kbd>Tab</kbd> to it.
+
+### Dark theme
+
+The button in the top right switches themes; the drawing is designed for both.
+
+![The studio in dark theme](docs/images/studio-dark.png)
+
+---
+
+## Command line
+
+Everything the studio does also runs headlessly, so Plastr fits a pipeline as
+well as it fits a screen.
+
+| Command | What it does |
+|---|---|
+| `plastr view` | Open the studio |
+| `plastr info` | One-screen summary of a graph |
+| `plastr qc` | Quality report, with reference evaluation if you give it one |
+| `plastr scaffold` | Break misassemblies, scaffold, export |
+| `plastr search` | Find a sequence in the assembly |
+| `plastr compare` | Several assemblies side by side |
+| `plastr export` | Write the graph, per-contig CSV and report |
+| `plastr doctor` | Check what is installed |
 
 ```bash
 # Quality report, with reference evaluation
@@ -85,39 +283,22 @@ plastr scaffold assembly.gfa -r reference.fasta \
 # Where is this gene?
 plastr search assembly.gfa --query gene.fasta
 
-# Quick look
-plastr info assembly.gfa
-
 # Two assemblers, one reference, side by side
 plastr compare spades.gfa mine.gfa -r reference.fasta --html compare.html
 ```
-
-`plastr scaffold` writes `scaffolds.fasta`, `scaffolds.agp`, `graph.gfa`,
-`segments.csv`, and `report.html` into the output directory.
 
 ---
 
 ## What it does
 
-### Sees the graph
-
-Segments are drawn as length-proportional polylines with depth-scaled width, in
-the double-stranded convention users expect. Colour by depth, GC,
-length, connected component, reference chromosome, or search hit. Pan, zoom,
-box-select, drag.
-
-**Rearrange** is a first-class control, not something you get by reloading. Re-run
-the layout over the whole graph, just your selection, or a single component, in
-force-directed, linear, circular, or component-grid mode. Watch it settle, stop
-it when it looks right.
-
-Export the view as PNG or SVG, because figures are half of why people open a
-graph viewer.
-
 ### Judges the assembly
 
 Reference-free: contigs, N50/L50, N75, NG50, auN, GC, depth distribution, dead
-ends, connected components, circular contigs.
+ends, connected components, circular contigs, and the numbers Bandage's *Graph
+information* dialog reports — edge overlap range, total length corrected for
+overlaps, percentage of dead ends, largest component and its share, length held
+in orphaned contigs, the length quartiles, and an estimate of how much sequence
+the assembly really represents.
 
 Reference-based, once you drop a reference FASTA in: genome fraction,
 duplication ratio, NA50/NGA50, mismatches and indels per 100 kb, and
@@ -131,11 +312,12 @@ the untouched span between alignment start and end counts as covered.
 Plastr splits alignments at long indels before scoring, which is why its
 genome fraction is lower — and correct — compared to a naive PAF summary.
 
-![Plastr QC report](docs/images/report-example.png)
+![Plastr QC report](docs/images/report.png)
 
-*The HTML report for the demo dataset: headline statistics, Nx and cumulative
-curves, a to-scale reference ideogram with misassembly breakpoints flagged, and
-N50 before and after scaffolding.*
+*The HTML report is one self-contained file with no CDN links and no chart
+library. Headline statistics, Nx and cumulative curves, a per-contig table you
+can sort, a to-scale reference ideogram with misassembly breakpoints flagged,
+and the misassemblies named one by one.*
 
 ### Fixes and scaffolds
 
