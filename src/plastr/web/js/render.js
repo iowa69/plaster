@@ -79,6 +79,13 @@ const EDGE_EXTENSION_WORLD = 5;
  */
 const SPLINE_TENSION = 0.155;
 
+/**
+ * Edge width in world units, so it scales with the drawing like a contig does.
+ * A contig at mean depth is five units wide, so an edge is a little under a
+ * third of that -- clearly a connector, never mistakable for a contig.
+ */
+const EDGE_WIDTH_WORLD = 1.5;
+
 /** Widest a node body should get, in CSS pixels, when a fit zooms in. */
 const MAX_NODE_BODY_PX = 44;
 
@@ -1130,8 +1137,13 @@ export class Renderer {
    * zoom into a tangle.
    */
   _linkWidth(scale) {
-    const w = Number(this.opts.edgeWidth) > 0 ? Number(this.opts.edgeWidth) : 1.1;
-    return Math.max(0.5, Math.min(3, w * Math.sqrt(scale)));
+    // Edges are a first-class part of the picture, not a hint that two contigs
+    // are related: they are what the eye follows from one contig to the next,
+    // so they scale with the view like the contigs do rather than being pinned
+    // to a hairline. The old cap of 3 px meant that at any zoom past the first
+    // the edges thinned away to nothing while the contigs grew.
+    const w = Number(this.opts.edgeWidth) > 0 ? Number(this.opts.edgeWidth) : EDGE_WIDTH_WORLD;
+    return Math.max(0.8, Math.min(14, w * scale));
   }
 
   /**
@@ -1643,7 +1655,8 @@ export class Renderer {
     /* ---- links ---- */
     if (this.opts.showLinks && scene.vlinks.length) {
       ctx.strokeStyle = th.link;
-      ctx.globalAlpha = 0.55;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.lineWidth = this._linkWidth(scale);
       ctx.beginPath();
       for (const li of scene.vlinks) {
@@ -1651,7 +1664,6 @@ export class Renderer {
         this._linkPath(ctx, g.links[li], scale);
       }
       ctx.stroke();
-      ctx.globalAlpha = 1;
       this._paintLinkAccents(ctx, scene, scale, o.interactive !== false);
     }
 
@@ -1681,7 +1693,7 @@ export class Renderer {
     }
     // Bandage strokes the node body with a flat cap and then cuts the
     // arrowhead out of it, so an arrowed node is still one solid shape.
-    ctx.lineCap = arrows ? 'butt' : 'round';
+    ctx.lineCap = 'butt';
     ctx.lineJoin = 'round';
 
     // Two passes per width bucket: a dark outline, then the coloured body on
@@ -1736,7 +1748,7 @@ export class Renderer {
 
     /* ---- selected nodes, raised to the front ---- */
     if (this.selected.size) {
-      ctx.lineCap = arrows ? 'butt' : 'round';
+      ctx.lineCap = 'butt';
       ctx.lineJoin = 'round';
       const sel = [];
       for (const si of scene.vis) if (this.selected.has(si)) sel.push(si);
@@ -1821,7 +1833,7 @@ export class Renderer {
         ctx.strokeStyle = p.colour;
         // A span that claims the whole node has to claim its end caps too, or
         // the body colour underneath shows as a nub past either end.
-        ctx.lineCap = !tip && p.s <= 1e-9 && p.e >= 1 - 1e-9 ? 'round' : 'butt';
+        ctx.lineCap = 'butt';
         if (p.s < cut) {
           ctx.beginPath();
           if (this._partialPath(ctx, si, p.s, Math.min(p.e, cut))) ctx.stroke();
@@ -1834,7 +1846,7 @@ export class Renderer {
         }
       }
     }
-    ctx.lineCap = arrows ? 'butt' : 'round';
+    ctx.lineCap = 'butt';
   }
 
   /**
@@ -1864,7 +1876,7 @@ export class Renderer {
       if (this._partialPath(ctx, si, run[0], run[1])) ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    ctx.lineCap = arrows ? 'butt' : 'round';
+    ctx.lineCap = 'butt';
   }
 
   /**
@@ -2300,7 +2312,7 @@ export class Renderer {
           ? `L${num(q.bx)} ${num(q.by)}`
           : `C${num(q.c1x)} ${num(q.c1y)} ${num(q.c2x)} ${num(q.c2y)} ${num(q.bx)} ${num(q.by)}`));
       }
-      parts.push(`<path d="${d.join('')}" fill="none" stroke="${esc(th.link)}" stroke-width="${num(lw)}" stroke-opacity="0.55"/>`);
+      parts.push(`<path d="${d.join('')}" fill="none" stroke="${esc(th.link)}" stroke-width="${num(lw)}" stroke-linecap="round"/>`);
     }
 
     // links that belong to a path or the selection are drawn over the rest

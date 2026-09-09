@@ -238,7 +238,7 @@ export const DEFAULT_PARAMS = Object.freeze({
   // contigs sit end to end. An absolute value cannot work: once the drawn scale
   // is calibrated per graph, a fixed 24 units is longer than an entire contig
   // on a large assembly, and the drawing becomes dots joined by long leaders.
-  linkRestFrac: 0.25,
+  linkRestFrac: 0.6,
   // Keeps a long contig reading as a smooth sweep rather than a squiggle.
   bendStrength: 0.90,
   // How firmly a closed molecule is held to a circle. Strong enough to survive

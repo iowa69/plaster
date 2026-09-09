@@ -28,7 +28,11 @@
   --canvas-grid:  #161c25;
   --node-default: #7f8ea3;
   --link:         #43506333;
-  --link-strong:  #5c6b82;
+  /* Edges carry the eye from one contig to the next, so they have to be as
+     legible as the contigs are. Against a near-black canvas that means a light
+     grey, not the muted slate this used to be, which disappeared at any zoom
+     where the contigs were still clear. */
+  --link-strong:  #aab6c6;
   --sel:          #ffd166;
   --hover:        #ffffff;
   --node-outline: rgba(28,36,48,0.85);
@@ -90,7 +94,7 @@
   --canvas-grid:  #e6ebf2;
   --node-default: #5b6577;
   --link:         #9aa7b933;
-  --link-strong:  #4a5566;
+  --link-strong:  #2b323d;
   --node-outline: rgba(10,16,24,0.88);
   --sel:          #d98800;
   --hover:        #000000;

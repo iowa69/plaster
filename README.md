@@ -88,7 +88,7 @@ without it. The demo builds two datasets in `examples/demo/`:
 | File | What it is |
 |---|---|
 | `assembly.gfa` + `reference.fasta` | Ten contigs with **known** errors planted in them — one inversion, one relocation, one translocation, one contig with no reference match. Use this to check that the numbers are right. |
-| `bacterium.gfa` | 238 segments, 1.86 Mb: a chromosome plus plasmids, with collapsed repeats and bubbles, and two finished circular replicons among them. Nothing planted — this one is for looking at. |
+| `bacterium.gfa` | 178 segments, 1.40 Mb: one strain — a chromosome still in pieces, a draft plasmid, and one small plasmid that closed into a single circular contig. Collapsed repeats and bubbles where an assembler leaves them. Nothing planted; this one is for looking at. |
 
 **2. Open the graph.**
 

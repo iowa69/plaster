@@ -77,7 +77,7 @@ def write_bacterium(outdir: str) -> tuple[str, int, int]:
         ]
 
     repeats_by_component = [make_repeats(n, tag) for n, tag in
-                            ((16, "c"), (3, "p1"), (1, "p2"), (0, "p3"))]
+                            ((16, "c"), (2, "p1"))]
 
     segments: list[tuple[str, str, float]] = []
     links: list[tuple[str, str, str, str]] = []
@@ -90,19 +90,32 @@ def write_bacterium(outdir: str) -> tuple[str, int, int]:
             segments.append((name, seq, round(depth, 2)))
         return name
 
-    for group in repeats_by_component:
-        for name, seq, mult in group:
-            emit(name, seq, background * mult)
-
     counter = 0
     # (segments in the walk, closes into a circle) -- a chromosome and three
     # plasmids, which is what a finished bacterial assembly usually looks like.
-    for comp, (count, circular) in enumerate([(150, True), (34, True), (14, True), (5, False)]):
+    # One strain: a chromosome still in pieces, and one plasmid, also in
+    # pieces. Draft assemblies look like this. Piling on more replicons made the
+    # picture read as several genomes in one file, which is not what a single
+    # isolate looks like and is misleading about what the tool is showing.
+    for comp, (count, circular) in enumerate([(150, True), (26, True)]):
         repeats = repeats_by_component[comp]
         first = previous = None
         for _ in range(count):
             if repeats and rng.random() < 0.14:
-                node = rng.choice(repeats)[0]
+                # Emitted on first use, not up front: a repeat the walk never
+                # visits would otherwise be written as an unlinked contig, and
+                # a scatter of those reads as unplaced junk the assembly does
+                # not actually contain.
+                #
+                # Never the same repeat twice running. The link would be a self
+                # link, which is the graph's way of saying "this closes", and
+                # skipping it instead breaks the walk in two -- a replicon that
+                # quietly becomes two components and reads as a second genome.
+                choices = [r for r in repeats if r[0] != previous]
+                if not choices:
+                    continue
+                name, seq, mult = rng.choice(choices)
+                node = emit(name, seq, background * mult)
             else:
                 counter += 1
                 # Log-normal lengths: a few long contigs carrying most of the
@@ -132,22 +145,13 @@ def write_bacterium(outdir: str) -> tuple[str, int, int]:
         if circular and first is not None and previous is not None and previous != first:
             links.append((previous, "+", first, "+"))
 
-    # Two finished replicons, to show what a closed molecule looks like next to
-    # a draft one. A complete circular plasmid assembles into a single contig
-    # whose two ends join -- a self-link in GFA -- and that is the commonest
-    # circular molecule anyone opens a graph viewer to confirm.
+    # One finished replicon. A complete circular plasmid assembles into a single
+    # contig whose two ends join -- a self-link in GFA -- and confirming that is
+    # most of why anyone opens a graph viewer. Exactly one: piling on more
+    # closed molecules made the picture read as several genomes in one file,
+    # which is not what a single isolate looks like.
     closed = emit("plasmid_closed", random_seq(rng, 41_000), background * 1.15)
     links.append((closed, "+", closed, "+"))
-
-    # And one assembled as a clean cycle of several contigs, with nothing else
-    # attached: the other shape circularity comes in.
-    ring = []
-    for i in range(7):
-        counter += 1
-        ring.append(emit(f"ring_{i + 1}", random_seq(rng, rng.randint(3_000, 14_000)),
-                         rng.gauss(background, 2.0)))
-    for i, node in enumerate(ring):
-        links.append((node, "+", ring[(i + 1) % len(ring)], "+"))
 
     path = os.path.join(outdir, "bacterium.gfa")
     lines = ["H\tVN:Z:1.0"]
