@@ -716,12 +716,17 @@ def _basic_rows(m: AssemblyMetrics) -> list[dict[str, str]]:
         _row("# contigs >= 1 kb", fmt_int(g("num_contigs_ge_1kb"))),
         _row("# contigs >= 10 kb", fmt_int(g("num_contigs_ge_10kb"))),
         _row("# contigs >= 50 kb", fmt_int(g("num_contigs_ge_50kb"))),
-        _row("Total length", fmt_span(g("total_length"))),
+        _row("Total length", fmt_span(g("total_length")),
+             "a plain sum of segment lengths, so shared overlaps are counted twice"),
+        _row("Total length (no overlaps)", fmt_span(g("total_length_no_overlaps")),
+             "each segment charged its largest edge overlap"),
         _row("Total length (>= 1 kb)", fmt_span(g("total_length_ge_1kb"))),
         _row("Largest contig", fmt_span(g("largest_contig"))),
         _row("Smallest contig", fmt_span(g("smallest_contig"))),
         _row("Mean contig length", fmt_float(g("mean_contig"), 1)),
+        _row("Lower quartile contig length", fmt_int(g("q1_length"))),
         _row("Median contig length", fmt_int(g("median_contig"))),
+        _row("Upper quartile contig length", fmt_int(g("q3_length"))),
         _row("GC content", fmt_pct(g("gc_percent"))),
         _row("# N's per 100 kb", fmt_float(g("n_per_100kb"))),
         _row("N50", fmt_span(g("n50")), "half the assembly sits in contigs this long or longer"),
@@ -737,15 +742,122 @@ def _basic_rows(m: AssemblyMetrics) -> list[dict[str, str]]:
             _row("LG50", fmt_int(g("lg50"))),
             _row("NG75", fmt_span(g("ng75"))),
         ]
+    largest_share = (
+        f"{fmt_pct(g('largest_component_percent'))} of the total length"
+        if g("largest_component_percent") is not None
+        else ""
+    )
+    orphaned_share = (
+        f"{fmt_pct(g('orphaned_percent'))} of the total length, in segments with no links"
+        if g("orphaned_percent") is not None
+        else "segments with no links at all"
+    )
     rows += [
         _row("# links", fmt_int(g("num_links"))),
+        _row("Edge overlap range", _overlap_range(m),
+             "sequence the two segments of a link share"),
         _row("# connected components", fmt_int(g("num_components"))),
+        _row("Largest component", fmt_span(g("largest_component_length")), largest_share),
+        _row("Orphaned length", fmt_span(g("orphaned_length")), orphaned_share),
         _row("# dead ends", fmt_int(g("dead_ends"))),
+        _row("Percentage dead ends", fmt_pct(g("dead_end_percent")),
+             "share of the two ends every contig has; 100% is a graph with no links"),
         _row("# circular contigs", fmt_int(g("num_circular"))),
+        _row("Median depth", fmt_float(g("median_depth")),
+             "length-weighted: half the assembly's bases sit below it"),
         _row("Mean depth", fmt_float(g("mean_depth"))),
         _row("Depth CV", fmt_float(g("depth_cv"))),
+        _row("Estimated sequence length", fmt_span(g("estimated_sequence_length")),
+             "each segment counted once per copy its depth suggests"),
     ]
     return rows
+
+
+def _overlap_range(m: AssemblyMetrics) -> str:
+    """``55 bp`` when every link agrees, ``10 to 55 bp`` when they do not."""
+    lo = getattr(m, "overlap_min", None)
+    hi = getattr(m, "overlap_max", None)
+    if lo is None or hi is None:
+        return DASH
+    if lo == hi:
+        return f"{fmt_int(lo)} bp"
+    return f"{fmt_int(lo)} to {fmt_int(hi)} bp"
+
+
+def _contig_table(
+    graph: Any,
+    plan: Any = None,
+    min_contig: int = 0,
+    limit: int = 2000,
+) -> dict[str, Any] | None:
+    """The per-contig table, longest first, capped at ``limit`` rows.
+
+    The same columns as ``Project.write_csv``, so a reader who exports the CSV
+    finds the numbers they were just looking at.
+    """
+    if graph is None:
+        return None
+    placement: dict[str, Any] = {}
+    if plan is not None:
+        try:
+            placement = plan.member_index()
+        except Exception:
+            placement = {}
+    components = graph.component_map()
+    names = [
+        name
+        for name in graph.segment_names_by_length()
+        if graph.segments[name].length >= min_contig
+    ]
+    rows: list[dict[str, Any]] = []
+    for name in names[:limit]:
+        segment = graph.segments[name]
+        left, right = graph.degree(name)
+        hit = segment.ref_hits[0] if segment.ref_hits else {}
+        scaffold, position = placement.get(name, ("", ""))
+        rows.append(
+            {
+                "name": name,
+                "length": segment.length,
+                "length_text": fmt_int(segment.length),
+                "depth": segment.depth,
+                "depth_text": fmt_float(segment.depth) if segment.depth is not None else DASH,
+                "gc": segment.gc,
+                "gc_text": fmt_pct(100.0 * segment.gc) if segment.gc is not None else DASH,
+                "component": components.get(name, 0),
+                "deg_start": left,
+                "deg_end": right,
+                "circular": graph.is_circular(name),
+                "ref": hit.get("ref") or DASH,
+                "ref_span": (
+                    f"{fmt_int(hit.get('r_st'))}{DASH}{fmt_int(hit.get('r_en'))}"
+                    if hit.get("r_st") is not None
+                    else DASH
+                ),
+                "identity": hit.get("identity"),
+                "identity_text": (
+                    fmt_pct(100.0 * hit["identity"]) if "identity" in hit else DASH
+                ),
+                "strand": hit.get("strand") or DASH,
+                "scaffold": scaffold or DASH,
+                "position": position if position != "" else DASH,
+            }
+        )
+    return {
+        "rows": rows,
+        "total": len(names),
+        "shown": len(rows),
+        "dropped": max(0, len(names) - len(rows)),
+        "limit": limit,
+        "min_contig": min_contig,
+        # Decided over every contig the table describes, not just the ones that
+        # survived the row cap: on a large assembly whose only reference hits
+        # land on short contigs, deciding from `rows` would drop the reference
+        # columns entirely and quietly claim nothing aligned. `has_scaffold` is
+        # already whole-graph, and the two flags have to agree on population.
+        "has_reference": any(graph.segments[name].ref_hits for name in names),
+        "has_scaffold": bool(placement),
+    }
 
 
 def _reference_rows(r: Any) -> list[dict[str, str]]:
@@ -1014,11 +1126,15 @@ def build_report(
     source_path: str | os.PathLike[str] | None = None,
     reference_path: str | os.PathLike[str] | None = None,
     subject: str | None = None,
+    graph: Any = None,
+    min_contig: int = 0,
 ) -> str:
     """Render a complete, standalone HTML QC report.
 
     Only ``metrics`` is required. Each optional argument unlocks one more
     section; passing nothing but metrics still produces a valid document.
+    ``graph`` adds the per-contig table, and ``min_contig`` must match the
+    filter the metrics were computed with so the two describe the same contigs.
     """
     if metrics is None:
         raise ValueError("build_report() needs an AssemblyMetrics instance")
@@ -1050,6 +1166,7 @@ def build_report(
         "reference_path": str(reference_path) if reference_path else None,
         "metrics": metrics,
         "basic_rows": _basic_rows(metrics),
+        "contigs": _contig_table(graph, plan, min_contig),
         "cards": _stat_cards(metrics, reference_report, scaffold),
         "reference": reference_report,
         "reference_rows": _reference_rows(reference_report) if reference_report is not None else [],

@@ -43,6 +43,123 @@ def mutate(rng: random.Random, seq: str, rate: float = 0.001) -> str:
     return "".join(out)
 
 
+def write_bacterium(outdir: str) -> tuple[str, int, int]:
+    """A graph big enough to look like an assembly, for exploring the studio.
+
+    The ground-truth dataset above is ten contigs, which is the right size for
+    checking a number and the wrong size for looking at a picture: a real
+    assembly graph gets its shape from long contigs threaded between collapsed
+    repeats, and ten of anything cannot show that. This writes a bacterial-scale
+    graph -- one chromosome walk broken at repeats that recur, plus plasmids --
+    with no reference and no planted errors, purely so there is something worth
+    drawing.
+
+    Deterministic, so the picture is the same on every machine.
+    """
+    rng = random.Random(SEED + 1)
+
+    # Repeats are the interesting part: each occurs several times in the walk,
+    # so the graph branches at them instead of being one long path. Their depth
+    # is a multiple of the background, as a collapsed repeat's would be.
+    #
+    # Each belongs to one replicon. A repeat shared between the chromosome and a
+    # plasmid would splice them into a single connected component, and then the
+    # plasmids stop being separate objects in the drawing -- which is the thing
+    # a graph viewer is most often opened to check.
+    def make_repeats(n: int, tag: str) -> list[tuple[str, str, float]]:
+        return [
+            (
+                f"repeat_{tag}{i + 1}",
+                random_seq(rng, rng.randint(900, 3_000)),
+                rng.uniform(2.4, 4.1),
+            )
+            for i in range(n)
+        ]
+
+    repeats_by_component = [make_repeats(n, tag) for n, tag in
+                            ((16, "c"), (3, "p1"), (1, "p2"), (0, "p3"))]
+
+    segments: list[tuple[str, str, float]] = []
+    links: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    background = 34.0
+
+    def emit(name: str, seq: str, depth: float) -> str:
+        if name not in seen:
+            seen.add(name)
+            segments.append((name, seq, round(depth, 2)))
+        return name
+
+    for group in repeats_by_component:
+        for name, seq, mult in group:
+            emit(name, seq, background * mult)
+
+    counter = 0
+    # (segments in the walk, closes into a circle) -- a chromosome and three
+    # plasmids, which is what a finished bacterial assembly usually looks like.
+    for comp, (count, circular) in enumerate([(150, True), (34, True), (14, True), (5, False)]):
+        repeats = repeats_by_component[comp]
+        first = previous = None
+        for _ in range(count):
+            if repeats and rng.random() < 0.14:
+                node = rng.choice(repeats)[0]
+            else:
+                counter += 1
+                # Log-normal lengths: a few long contigs carrying most of the
+                # sequence, many short ones, as an assembler actually produces.
+                length = int(rng.lognormvariate(8.6, 1.0)) + 400
+                node = emit(
+                    f"ctg_{counter}",
+                    random_seq(rng, length),
+                    rng.gauss(background, 3.0),
+                )
+            if first is None:
+                first = node
+            if previous is not None and previous != node:
+                links.append((previous, "+", node, "+"))
+            # A bubble: two alternatives between the same pair of contigs, which
+            # is what a heterozygous site or a sequencing error looks like.
+            if previous is not None and rng.random() < 0.10:
+                counter += 1
+                alt = emit(
+                    f"alt_{counter}",
+                    random_seq(rng, rng.randint(400, 2_600)),
+                    rng.gauss(background * 0.55, 2.0),
+                )
+                links.append((previous, "+", alt, "+"))
+                links.append((alt, "+", node, "+"))
+            previous = node
+        if circular and first is not None and previous is not None and previous != first:
+            links.append((previous, "+", first, "+"))
+
+    # Two finished replicons, to show what a closed molecule looks like next to
+    # a draft one. A complete circular plasmid assembles into a single contig
+    # whose two ends join -- a self-link in GFA -- and that is the commonest
+    # circular molecule anyone opens a graph viewer to confirm.
+    closed = emit("plasmid_closed", random_seq(rng, 41_000), background * 1.15)
+    links.append((closed, "+", closed, "+"))
+
+    # And one assembled as a clean cycle of several contigs, with nothing else
+    # attached: the other shape circularity comes in.
+    ring = []
+    for i in range(7):
+        counter += 1
+        ring.append(emit(f"ring_{i + 1}", random_seq(rng, rng.randint(3_000, 14_000)),
+                         rng.gauss(background, 2.0)))
+    for i, node in enumerate(ring):
+        links.append((node, "+", ring[(i + 1) % len(ring)], "+"))
+
+    path = os.path.join(outdir, "bacterium.gfa")
+    lines = ["H\tVN:Z:1.0"]
+    for name, seq, depth in segments:
+        lines.append(f"S\t{name}\t{seq}\tdp:f:{depth}\tLN:i:{len(seq)}")
+    for a, ao, b, bo in sorted(set(links)):
+        lines.append(f"L\t{a}\t{ao}\t{b}\t{bo}\t0M")
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path, len(segments), len(set(links))
+
+
 def main(outdir: str = "examples/demo") -> None:
     rng = random.Random(SEED)
     os.makedirs(outdir, exist_ok=True)
@@ -126,10 +243,13 @@ def main(outdir: str = "examples/demo") -> None:
     with open(os.path.join(outdir, "truth.json"), "w") as fh:
         json.dump(truth, fh, indent=2)
 
+    bact, bact_segments, bact_links = write_bacterium(outdir)
+
     print(f"reference : {reference}  ({len(chrom) + len(plasmid):,} bp, 2 sequences)")
     print(f"graph     : {gfa}  ({len(contigs)} segments, {len(links)} links)")
     print(f"contigs   : {os.path.join(outdir, 'contigs.fasta')}")
     print(f"truth     : {truth['expected']}")
+    print(f"big graph : {bact}  ({bact_segments} segments, {bact_links} links)")
 
 
 if __name__ == "__main__":

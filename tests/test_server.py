@@ -14,8 +14,10 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from plastr.core.project import Project  # noqa: E402
+from plastr.core.sequence import oriented  # noqa: E402
 
 from conftest import requires_aligner  # noqa: E402
+from plastr.server import app as app_mod  # noqa: E402
 from plastr.server.app import create_app  # noqa: E402
 
 
@@ -87,13 +89,266 @@ def test_graph_min_length_filter(client):
     assert all(s["length"] >= 10_000 for s in body["segments"])
 
 
-def test_graph_truncation_keeps_longest(client):
+def test_graph_truncation_keeps_the_result_connected(client):
     body = client.get("/api/graph", params={"max_nodes": 3}).json()
     assert body["truncated"] is True
     assert body["shown"] == 3
     assert body["total"] == 10
-    lengths = [s["length"] for s in body["segments"]]
-    assert min(lengths) >= 11_000  # the three longest in the demo set
+    assert body["dropped"] == [
+        {"reason": _CAP_REASON.format(cap=3), "count": 7},
+    ]
+    assert "breadth-first" in body["truncation"]
+    # The point of growing outward: three segments that are actually joined,
+    # rather than the three longest, which in this graph share no link at all.
+    assert _pieces(body) == 1
+
+
+#: The cap's line in the payload's `dropped` list, as the sidebar prints it.
+_CAP_REASON = (
+    "segment(s) past the {cap:,}-node cap; what is drawn was grown "
+    "breadth-first from the scope seeds so that it stays connected"
+)
+
+
+def _pieces(payload) -> int:
+    """How many disconnected pieces the returned subgraph falls into."""
+    names = {s["name"] for s in payload["segments"]}
+    nbrs = {name: set() for name in names}
+    for link in payload["links"]:
+        nbrs[link["from"]].add(link["to"])
+        nbrs[link["to"]].add(link["from"])
+    seen, count = set(), 0
+    for start in names:
+        if start in seen:
+            continue
+        count += 1
+        stack = [start]
+        seen.add(start)
+        while stack:
+            for nb in nbrs[stack.pop()]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    return count
+
+
+# ----------------------------------------------------------------- graph scope
+
+
+def test_scope_around_distance_zero_is_only_the_named_segments(client):
+    body = client.get(
+        "/api/graph",
+        params={"scope": "around", "nodes": "ctg_repeat", "match": "exact"},
+    ).json()
+    assert [s["name"] for s in body["segments"]] == ["ctg_repeat"]
+    assert body["scope"] == "around"
+    # An edge needs both of its endpoints in scope, so a lone node has none.
+    assert body["links"] == []
+
+
+def test_scope_around_grows_by_one_step_at_a_time(client):
+    def around(distance):
+        body = client.get(
+            "/api/graph",
+            params={
+                "scope": "around",
+                "nodes": "ctg_clean_1",
+                "match": "exact",
+                "distance": distance,
+            },
+        ).json()
+        return {s["name"] for s in body["segments"]}
+
+    assert around(0) == {"ctg_clean_1"}
+    assert around(1) == {"ctg_clean_1", "ctg_repeat"}
+    assert around(2) == {
+        "ctg_clean_1", "ctg_repeat", "ctg_clean_2", "ctg_clean_3", "ctg_clean_4",
+    }
+
+
+def test_scope_around_matches_partial_names(client):
+    body = client.get(
+        "/api/graph", params={"scope": "around", "nodes": "clean", "match": "partial"}
+    ).json()
+    assert {s["name"] for s in body["segments"]} == {
+        "ctg_clean_1", "ctg_clean_2", "ctg_clean_3", "ctg_clean_4",
+    }
+    assert body["missing"] == []
+
+
+def test_unknown_match_mode_is_a_readable_400(client):
+    r = client.get(
+        "/api/graph", params={"scope": "around", "nodes": "ctg_repeat", "match": "fuzzy"}
+    )
+    assert r.status_code == 400
+    assert "'exact' or 'partial'" in r.json()["error"]
+
+
+def test_scope_around_exact_does_not_match_a_substring(client):
+    r = client.get(
+        "/api/graph", params={"scope": "around", "nodes": "clean", "match": "exact"}
+    )
+    assert r.status_code == 404
+    assert "no segment matches" in r.json()["error"]
+
+
+def test_scope_around_names_the_queries_that_matched_nothing(client):
+    body = client.get(
+        "/api/graph",
+        params={"scope": "around", "nodes": "ctg_repeat,nope", "match": "exact"},
+    ).json()
+    assert body["missing"] == ["nope"]
+    assert body["shown"] == 1
+
+
+def test_scope_around_needs_at_least_one_name(client):
+    r = client.get("/api/graph", params={"scope": "around"})
+    assert r.status_code == 400
+    assert "at least one segment name" in r.json()["error"]
+
+
+def test_scope_around_truncates_outward_from_its_seed(client):
+    body = client.get(
+        "/api/graph",
+        params={
+            "scope": "around", "nodes": "ctg_repeat", "match": "exact",
+            "distance": 3, "max_nodes": 2,
+        },
+    ).json()
+    assert body["total"] == 7
+    assert body["shown"] == 2
+    assert body["dropped"] == [
+        {"reason": "segment(s) outside this scope", "count": 3},
+        {"reason": _CAP_REASON.format(cap=2), "count": 5},
+    ]
+    assert "breadth-first" in body["truncation"]
+    names = {s["name"] for s in body["segments"]}
+    assert "ctg_repeat" in names  # the seed is never the one dropped
+    assert _pieces(body) == 1
+
+
+def test_scope_depth_keeps_only_segments_in_the_range(client):
+    whole = client.get("/api/graph").json()
+    depths = {s["name"]: s["depth"] for s in whole["segments"]}
+    ordered = sorted(depths.values())
+    low, high = ordered[3], ordered[6]
+
+    body = client.get(
+        "/api/graph", params={"scope": "depth", "depth_min": low, "depth_max": high}
+    ).json()
+    assert {s["name"] for s in body["segments"]} == {
+        n for n, d in depths.items() if low <= d <= high
+    }
+    assert 0 < body["shown"] < whole["shown"]
+
+
+def test_scope_depth_may_leave_either_end_open(client):
+    whole = client.get("/api/graph").json()
+    depths = {s["name"]: s["depth"] for s in whole["segments"]}
+    middle = sorted(depths.values())[5]
+
+    above = client.get("/api/graph", params={"scope": "depth", "depth_min": middle}).json()
+    below = client.get("/api/graph", params={"scope": "depth", "depth_max": middle}).json()
+    both = client.get("/api/graph", params={"scope": "depth"}).json()
+
+    assert {s["name"] for s in above["segments"]} == {
+        n for n, d in depths.items() if d >= middle
+    }
+    assert {s["name"] for s in below["segments"]} == {
+        n for n, d in depths.items() if d <= middle
+    }
+    assert both["shown"] == whole["shown"]
+
+
+def test_scope_depth_rejects_an_inverted_range(client):
+    r = client.get("/api/graph", params={"scope": "depth", "depth_min": 9, "depth_max": 1})
+    assert r.status_code == 400
+    assert "depth_min" in r.json()["error"]
+
+
+def test_scope_component_needs_an_index(client):
+    r = client.get("/api/graph", params={"scope": "component"})
+    assert r.status_code == 400
+    assert "component" in r.json()["error"]
+
+
+def test_unknown_scope_is_a_readable_400(client):
+    r = client.get("/api/graph", params={"scope": "sideways"})
+    assert r.status_code == 400
+    assert "entire" in r.json()["error"]
+
+
+# ------------------------------------------------------------------- tags
+
+
+def test_graph_segments_carry_their_gfa_tags(client):
+    body = client.get("/api/graph").json()
+    tags = {s["name"]: s["tags"] for s in body["segments"]}
+    assert tags["ctg_repeat"]["LN"] == 2400
+    assert isinstance(tags["ctg_repeat"]["dp"], float)
+
+
+def test_colour_and_label_tags_travel_but_huge_ones_do_not(empty_client, tmp_path):
+    gfa = tmp_path / "tagged.gfa"
+    gfa.write_text(
+        "H\tVN:Z:1.0\n"
+        "S\ta\tACGTACGTAC\tCL:Z:#ff0000\tLB:Z:origin\tXX:Z:" + "N" * 500 + "\n"
+        "S\tb\tACGTACGTAC\tC2:Z:#00ff00\tL2:Z:second\n"
+        "L\ta\t+\tb\t+\t0M\n"
+    )
+    empty_client.post("/api/load", json={"path": str(gfa)})
+    tags = {s["name"]: s["tags"] for s in empty_client.get("/api/graph").json()["segments"]}
+    assert tags["a"]["CL"] == "#ff0000"
+    assert tags["a"]["LB"] == "origin"
+    assert tags["b"]["C2"] == "#00ff00"
+    assert tags["b"]["L2"] == "second"
+    assert "XX" not in tags["a"]  # too long to be worth sending for every segment
+
+
+# -------------------------------------------------------------- sequences
+
+
+def test_sequences_returns_fasta(client):
+    body = client.post("/api/fasta", json={"names": ["ctg_repeat", "ctg_plasmid"]}).json()
+    assert body["segments"] == ["ctg_repeat", "ctg_plasmid"]
+    assert body["bases"] == 2400 + 4000
+    assert body["fasta"].startswith(">ctg_repeat\n")
+    assert body["fasta"].count(">") == 2
+    assert len(body["fasta"].split(">ctg_plasmid\n")[1].replace("\n", "")) == 4000
+
+
+def test_sequences_takes_a_trailing_sign_for_the_other_strand(client):
+    plus = client.get("/api/segment/ctg_repeat").json()["sequence"]
+    body = client.post("/api/fasta", json={"names": ["ctg_repeat-"], "wrap": 0}).json()
+    assert body["fasta"] == f">ctg_repeat-\n{oriented(plus, '-')}\n"
+
+
+def test_sequences_rejects_an_unknown_name(client):
+    r = client.post("/api/fasta", json={"names": ["nope"]})
+    assert r.status_code == 404
+    assert "no segment named" in r.json()["error"]
+
+
+def test_sequences_needs_names(client):
+    r = client.post("/api/fasta", json={"names": []})
+    assert r.status_code == 400
+    assert "no segment names" in r.json()["error"]
+
+
+def test_sequences_refuses_an_oversized_selection(client, monkeypatch):
+    monkeypatch.setattr(app_mod, "MAX_SEQUENCE_BASES", 1000)
+    r = client.post("/api/fasta", json={"names": ["ctg_repeat"]})
+    assert r.status_code == 400
+    assert "2,400 bases" in r.json()["error"]
+
+
+def test_sequences_says_so_when_the_graph_has_none(empty_client, tmp_path):
+    gfa = tmp_path / "lengths_only.gfa"
+    gfa.write_text("H\tVN:Z:1.0\nS\ta\t*\tLN:i:500\nS\tb\t*\tLN:i:400\n")
+    empty_client.post("/api/load", json={"path": str(gfa)})
+    r = empty_client.post("/api/fasta", json={"names": ["a"]})
+    assert r.status_code == 400
+    assert "without sequences" in r.json()["error"]
 
 
 def test_links_never_reference_a_hidden_segment(client):

@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..core import model
 from ..core.analysis import align as align_mod
 from ..core.analysis import search as search_mod
 from ..core.errors import PlastrError, PlastrFormatError, MissingDependencyError
@@ -29,6 +30,17 @@ from ..core.project import Project
 from ..core.scaffold.plan import ScaffoldPlan
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+#: A GFA tag value longer than this is left out of the graph payload. Aligners
+#: park whole CIGARs and read lists in Z tags, and the browser only wants the
+#: short ones it can colour or label with -- Bandage's CL/C2 and LB/L2 among
+#: them, all of which are far below the limit.
+MAX_TAG_CHARS = 200
+
+#: Ceiling on one /api/fasta request. Big enough for any plasmid or contig
+#: selection someone would copy, small enough that a fat-fingered "select all"
+#: on a mammalian assembly cannot ask the server to build a gigabyte of JSON.
+MAX_SEQUENCE_BASES = 20_000_000
 
 # The project is mutated from request handlers; a lock keeps a slow alignment
 # from racing a graph edit.
@@ -192,30 +204,56 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
         min_length: int = Query(0, ge=0),
         max_nodes: int = Query(15000, ge=1, le=500000),
         component: int | None = Query(None),
+        scope: str = Query("entire"),
+        nodes: str = Query(""),
+        distance: int = Query(0, ge=0, le=100),
+        match: str = Query("exact"),
+        depth_min: float | None = Query(None),
+        depth_max: float | None = Query(None),
     ) -> dict:
+        if scope not in model.SCOPES:
+            fail(f"unknown scope {scope!r}; choose one of {', '.join(model.SCOPES)}")
+        if match not in ("exact", "partial"):
+            fail(f"unknown match {match!r}; choose 'exact' or 'partial'")
+        # Bandage's own text field: names separated by commas.
+        wanted = [n.strip() for n in nodes.split(",") if n.strip()]
+        if scope == "around" and not wanted:
+            fail(
+                "the 'around' scope needs at least one segment name in 'nodes', "
+                "separated by commas"
+            )
+        if scope == "component" and component is None:
+            fail("the 'component' scope needs a 'component' index")
+        if depth_min is not None and depth_max is not None and depth_min > depth_max:
+            fail("depth_max must be at least depth_min")
+
         with _lock:
             p = proj()
             g = p.require_graph()
             components = g.component_map()
-
-            names = [
-                name
-                for name, segment in g.segments.items()
-                if segment.length >= min_length
-                and (component is None or components.get(name, 0) == component)
-            ]
-            total = len(names)
-            truncated = False
-            if len(names) > max_nodes:
-                # Keep the longest segments -- they are the ones worth looking at.
-                names = sorted(
-                    names, key=lambda n: g.segments[n].length, reverse=True
-                )[:max_nodes]
-                truncated = True
-            keep = set(names)
+            picked = model.scope_segments(
+                g,
+                scope,
+                names=wanted,
+                distance=distance,
+                exact=match == "exact",
+                min_depth=depth_min,
+                max_depth=depth_max,
+                component=component,
+                min_length=min_length,
+                max_nodes=max_nodes,
+                components=components,
+            )
+            # Bandage refuses to draw when nothing the user typed exists; a
+            # partial miss is only a warning, and travels in the payload. Names
+            # that matched but fell to min_length are not an error either -- the
+            # empty result names the filter that did it.
+            if scope == "around" and len(picked.missing) == len(wanted):
+                fail(f"no segment matches {', '.join(picked.missing)}", 404)
+            keep = set(picked.names)
 
             segments = []
-            for name in keep:
+            for name in picked.names:
                 segment = g.segments[name]
                 left, right = g.degree(name)
                 segments.append(
@@ -229,6 +267,7 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                         "deg_end": right,
                         "circular": g.is_circular(name),
                         "ref_hits": segment.ref_hits,
+                        "tags": _public_tags(segment.tags),
                     }
                 )
             links = [
@@ -242,14 +281,34 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                 if all(step in keep for step, _ in p_.steps)
             ]
             references = sorted(p.reference_lengths)
+            outside = len(g.segments) - picked.total
 
+        # One line per reason, ready to print: a user who asked for the whole
+        # graph and got a third of it deserves to know which control did it.
+        dropped = []
+        if outside > 0:
+            dropped.append({"reason": "segment(s) outside this scope", "count": outside})
+        if picked.dropped:
+            dropped.append(
+                {
+                    "reason": (
+                        f"segment(s) past the {max_nodes:,}-node cap; what is drawn "
+                        f"was grown {picked.rule} so that it stays connected"
+                    ),
+                    "count": picked.dropped,
+                }
+            )
         return {
             "segments": segments,
             "links": links,
             "paths": paths,
-            "truncated": truncated,
+            "truncated": picked.rule != model.NO_TRUNCATION,
+            "truncation": picked.rule,
+            "dropped": dropped,
+            "scope": scope,
+            "missing": picked.missing,
             "shown": len(segments),
-            "total": total,
+            "total": picked.total,
             "references": references,
         }
 
@@ -274,6 +333,65 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                 "neighbours": sorted(g.neighbours(name)),
                 "sequence": seg.sequence or "",
             }
+
+    @app.post("/api/fasta")
+    def fasta(body: dict = Body(...)) -> dict:
+        """FASTA for a selection, behind Bandage's copy/save sequence actions.
+
+        A name may carry a trailing ``+``/``-``; ``-`` returns the reverse
+        complement, which is what "copy sequence" gives you for a node selected
+        on its other strand.
+        """
+        body = body or {}
+        names = body.get("names")
+        if isinstance(names, str):
+            names = names.split(",")
+        if not isinstance(names, list):
+            fail("'names' must be a list of segment names")
+        wanted = [str(n).strip() for n in names if str(n).strip()]
+        if not wanted:
+            fail("no segment names given")
+        wrap = _num(body, "wrap", 60, int, 0, 1000)
+
+        with _lock:
+            g = proj().require_graph()
+            if not any(s.has_sequence for s in g.segments.values()):
+                fail(
+                    "this graph was loaded without sequences; load a GFA with S-line "
+                    "sequences, or attach the assembly FASTA"
+                )
+            picked: list[tuple[str, str]] = []  # (segment name, orientation)
+            for name in dict.fromkeys(wanted):
+                orient = "+"
+                seg = g.segments.get(name)
+                if seg is None and name[-1] in "+-":
+                    orient = name[-1]
+                    seg = g.segments.get(name[:-1])
+                if seg is None:
+                    fail(f"no segment named {name!r}", 404)
+                if not seg.has_sequence:
+                    fail(f"segment {seg.name!r} has no sequence")
+                picked.append((seg.name, orient))
+            # Measured before anything is built, so the message can name the
+            # real size rather than the size of the prefix that fitted.
+            bases = sum(g.segments[n].length for n, _ in picked)
+            if bases > MAX_SEQUENCE_BASES:
+                fail(
+                    f"that selection is {bases:,} bases; ask for at most "
+                    f"{MAX_SEQUENCE_BASES:,} at a time"
+                )
+            records = [
+                (name if orient == "+" else f"{name}-", g.segments[name].seq_oriented(orient))
+                for name, orient in picked
+            ]
+
+        from ..core.io.fasta import fasta_string
+
+        return {
+            "fasta": fasta_string(records, wrap=wrap),
+            "segments": [name for name, _ in records],
+            "bases": bases,
+        }
 
     # ------------------------------------------------------------- reference
 
@@ -498,6 +616,7 @@ def create_app(project: Project | None = None, threads: int = 4) -> FastAPI:
                     built=p.build() if p.plan else None,
                     source_path=p.source_path,
                     reference_path=p.reference_path,
+                    graph=p.graph,
                 )
                 return _text_download(html, "report.html", "text/html")
         fail(f"unknown download kind {kind!r}", 404)
@@ -601,6 +720,14 @@ def _qc_settings(project: Project) -> dict:
         "circular_references": project.circular_references,
         "primary_only": project.primary_only,
         "genome_size": project.genome_size,
+    }
+
+
+def _public_tags(tags: dict) -> dict:
+    return {
+        key: value
+        for key, value in tags.items()
+        if not (isinstance(value, str) and len(value) > MAX_TAG_CHARS)
     }
 
 

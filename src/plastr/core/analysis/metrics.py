@@ -69,6 +69,8 @@ class AssemblyMetrics:
     lg50: int | None = None
     ng75: int | None = None
     genome_size: int | None = None
+    q1_length: int = 0
+    q3_length: int = 0
     # graph-specific
     num_links: int = 0
     num_components: int = 0
@@ -77,6 +79,16 @@ class AssemblyMetrics:
     mean_depth: float | None = None
     median_depth: float | None = None
     depth_cv: float | None = None
+    # Bandage's "Graph information" numbers
+    overlap_min: int | None = None
+    overlap_max: int | None = None
+    total_length_no_overlaps: int = 0
+    dead_end_percent: float = 0.0
+    largest_component_length: int = 0
+    largest_component_percent: float | None = None
+    orphaned_length: int = 0
+    orphaned_percent: float | None = None
+    estimated_sequence_length: int | None = None
     # plotting series
     nx_curve: list[tuple[float, int]] = field(default_factory=list)
     cumulative_curve: list[tuple[int, int]] = field(default_factory=list)
@@ -94,6 +106,33 @@ def _median(values: Sequence[int]) -> int:
     if len(ordered) % 2:
         return ordered[mid]
     return (ordered[mid - 1] + ordered[mid]) // 2
+
+
+def _round_half_up(value: float) -> int:
+    """C's ``round()``, which is what Bandage's numbers are computed with.
+
+    Python rounds halves to even, so ``round(2.5)`` is 2 there and 3 here.
+    """
+    return -math.floor(-value + 0.5) if value < 0 else math.floor(value + 0.5)
+
+
+def _fractional_index(ordered: Sequence[int], index: float) -> float:
+    """Interpolate between the two values either side of a fractional position.
+
+    Bandage takes its quartiles this way, so a four-node graph reports 175 bp
+    rather than picking one of the two straddling nodes.
+    """
+    if not ordered:
+        return 0.0
+    if len(ordered) == 1:
+        return float(ordered[0])
+    whole = math.floor(index)
+    if whole < 0:
+        return float(ordered[0])
+    if whole >= len(ordered) - 1:
+        return float(ordered[-1])
+    frac = index - whole
+    return ordered[whole] * (1.0 - frac) + ordered[whole + 1] * frac
 
 
 def _weighted_median_depth(segments: Sequence) -> float | None:
@@ -199,6 +238,9 @@ def compute_metrics(
     m.smallest_contig = min(lengths)
     m.mean_contig = m.total_length / len(lengths)
     m.median_contig = _median(lengths)
+    ordered = sorted(lengths)
+    m.q1_length = _round_half_up(_fractional_index(ordered, (len(ordered) - 1) / 4.0))
+    m.q3_length = _round_half_up(_fractional_index(ordered, (len(ordered) - 1) * 3.0 / 4.0))
 
     m.n50, m.l50 = nx_stat(lengths, 0.5)
     m.n75, m.l75 = nx_stat(lengths, 0.75)
@@ -237,6 +279,7 @@ def compute_metrics(
     # Graph topology is reported for the same segments the length statistics
     # describe. Reporting 63 contigs alongside 125 components would just look
     # like a bug.
+    kept: set[str] | None = None
     if min_length > 0:
         kept = {s.name for s in segments}
         links, components, dead_ends = _induced_topology(graph, kept)
@@ -250,10 +293,99 @@ def compute_metrics(
         m.dead_ends = graph.dead_end_count()
         m.num_circular = sum(1 for n in graph.segments if graph.is_circular(n))
 
+    _graph_information(m, graph, segments, kept)
+
     m.nx_curve = _nx_curve(lengths)
     m.cumulative_curve = _cumulative(lengths)
     m.length_histogram = _histogram(lengths)
     return m
+
+
+def _graph_information(
+    m: AssemblyMetrics,
+    graph: AssemblyGraph,
+    segments: Sequence,
+    kept: set[str] | None,
+) -> None:
+    """Fill in the numbers from Bandage's "Graph information" dialog.
+
+    ``kept`` is the set of segment names that survived ``min_length``, or None
+    when nothing was filtered; a link to a filtered-out segment is no longer a
+    connection, so it is dropped here exactly as it is from the topology counts.
+    """
+    length_of = {s.name: s.length for s in segments}
+    links = [
+        link
+        for link in graph.links.values()
+        if kept is None or (link.from_name in kept and link.to_name in kept)
+    ]
+
+    if links:
+        overlaps = [link.overlap for link in links]
+        m.overlap_min = min(overlaps)
+        m.overlap_max = max(overlaps)
+
+    widest: dict[str, int] = {}
+    trailing: dict[str, int] = {}
+    degree: dict[str, int] = {}
+    for link in links:
+        for name, end in link.ends():
+            widest[name] = max(widest.get(name, 0), link.overlap)
+            degree[name] = degree.get(name, 0) + 1
+            if end == "end":
+                trailing[name] = max(trailing.get(name, 0), link.overlap)
+
+    # Every overlap is written out twice, once in each of the segments that
+    # share it, so charging each segment its widest overlap removes each shared
+    # stretch about once. The floor matters for segments shorter than their own
+    # overlap, which k-mer graphs do produce.
+    m.total_length_no_overlaps = sum(
+        max(0, length - widest.get(name, 0)) for name, length in length_of.items()
+    )
+    m.orphaned_length = sum(
+        length for name, length in length_of.items() if not degree.get(name)
+    )
+    if m.num_contigs:
+        m.dead_end_percent = 100.0 * m.dead_ends / (2 * m.num_contigs)
+
+    adjacency: dict[str, set[str]] = {name: set() for name in length_of}
+    for link in links:
+        if link.from_name == link.to_name:
+            continue
+        adjacency[link.from_name].add(link.to_name)
+        adjacency[link.to_name].add(link.from_name)
+    seen: set[str] = set()
+    for start in length_of:
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        total = 0
+        while stack:
+            node = stack.pop()
+            total += length_of[node]
+            for nb in adjacency[node]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        m.largest_component_length = max(m.largest_component_length, total)
+
+    if m.total_length > 0:
+        m.largest_component_percent = 100.0 * m.largest_component_length / m.total_length
+        m.orphaned_percent = 100.0 * m.orphaned_length / m.total_length
+
+    # Bandage's estimate of how much sequence the assembly really represents: a
+    # node at twice the median depth is assumed to be two collapsed copies. With
+    # no median depth there is nothing to compare against, so it stays unknown,
+    # and so do segments that carry no depth of their own.
+    if m.median_depth and m.median_depth > 0:
+        estimated = 0
+        for seg in segments:
+            if seg.depth is None:
+                continue
+            copies = _round_half_up(seg.depth / m.median_depth)
+            estimated += max(0, seg.length - trailing.get(seg.name, 0)) * copies
+        m.estimated_sequence_length = estimated
 
 
 def _induced_topology(graph: AssemblyGraph, kept: set[str]) -> tuple[int, int, int]:

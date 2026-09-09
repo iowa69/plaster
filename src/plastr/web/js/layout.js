@@ -164,6 +164,35 @@ class QuadTree {
   }
 }
 
+/**
+ * Shelf-pack boxes into rows, largest first, targeting an aspect ratio.
+ *
+ * Writes `x`/`y` (top-left) into each box and returns the packed extent. Used
+ * wherever whole components have to be placed: a uniform grid sized by the
+ * largest component gives a two-segment plasmid the same cell as a
+ * three-hundred-segment chromosome, which on a calibrated scale is thousands of
+ * empty world units between neighbours.
+ */
+function shelfPack(boxes, aspect) {
+  if (!boxes.length) return { w: 0, h: 0 };
+  boxes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+  let area = 0;
+  for (const b of boxes) area += b.w * b.h;
+  let rowWidth = Math.sqrt(area * (aspect || 1.4));
+  for (const b of boxes) if (b.w > rowWidth) rowWidth = b.w;
+
+  let cx = 0, cy = 0, rowH = 0, maxX = 0;
+  for (const b of boxes) {
+    if (cx > 0 && cx + b.w > rowWidth) { cx = 0; cy += rowH; rowH = 0; }
+    b.x = cx;
+    b.y = cy;
+    cx += b.w;
+    if (cx > maxX) maxX = cx;
+    if (b.h > rowH) rowH = b.h;
+  }
+  return { w: maxX, h: cy + rowH };
+}
+
 /* ====================================================================== */
 /*  Layout engine                                                          */
 /* ====================================================================== */
@@ -196,20 +225,54 @@ export const DEFAULT_PARAMS = Object.freeze({
   // naturally claims more room. These values were tuned so a small bacterial
   // graph settles at roughly a few times its longest segment rather than
   // flinging its components kilometres apart.
-  repulsion: 0.05,
+  // Calibrated by measuring the median link end-gap over real graphs: Bandage
+  // gives a link an ideal length of a quarter of one polyline step, and this is
+  // the value that reproduces that on both a 10-segment and a 285-segment
+  // graph. The previous 0.05 predated the per-graph length calibration and left
+  // small graphs with gaps twice the length of the contigs they joined.
+  repulsion: 0.01,
   linkStrength: 1.80,
-  linkRest: 24,
+  // Rest length of a link, **as a fraction of the mean intra-segment spacing**.
+  // Bandage gives real edges an ideal length of 5.0 against a node segment
+  // length of 20.0, so a link is a quarter of one polyline step and joined
+  // contigs sit end to end. An absolute value cannot work: once the drawn scale
+  // is calibrated per graph, a fixed 24 units is longer than an entire contig
+  // on a large assembly, and the drawing becomes dots joined by long leaders.
+  linkRestFrac: 0.25,
   // Keeps a long contig reading as a smooth sweep rather than a squiggle.
   bendStrength: 0.90,
-  gravity: 0.09,
+  // How firmly a closed molecule is held to a circle. Strong enough to survive
+  // repulsion and the link springs, weak enough that dragging a contig still
+  // deforms the ring under the pointer rather than fighting it.
+  ringStrength: 0.35,
+  // Curvature stiffness, applied over triples of consecutive vertices. This is
+  // what lets a polyline carry many vertices without buckling, so long contigs
+  // can bend into sweeping curves instead of being held straight by starving
+  // them of vertices.
+  curvature: 0.55,
+  // Pull towards the component's own centre, not the whole drawing's. A global
+  // centroid packs every component into one disc, which is why unrelated
+  // plasmids used to be threaded through the chromosome.
+  gravity: 0.02,
   damping: 0.82,
-  theta: 0.9,
+  theta: 0.75,
   maxIter: 600,
-  constraintPasses: 3,
+  // Width-to-height ratio aimed for when packing components into rows.
+  packAspect: 1.4,
+  constraintPasses: 8,
   animFrames: 42,
-  componentPad: 90,
-  rankGap: 70,
-  rowGap: 48,
+  // The three constants below are world units, and world units now mean
+  // something fixed: the calibration puts the mean node at 40 and one polyline
+  // step at 20 whatever the assembly's size (GraphModel.calibrate). They were
+  // chosen against the old scale, where a bacterial contig came out ~5 units
+  // long and a 70-unit rank gap was fourteen contigs of empty space.
+  // `componentPad` is Bandage's own `componentSeparation` (settings.cpp:37);
+  // the other two are one polyline step and a little under two of them, which
+  // leaves a rearranged graph a few times looser than the force layout instead
+  // of an order of magnitude looser.
+  componentPad: 50,
+  rankGap: 20,
+  rowGap: 36,
 });
 
 export const LAYOUT_MODES = ['force', 'linear', 'circular', 'grid'];
@@ -236,8 +299,19 @@ export class LayoutEngine {
     this.fx = new Float32Array(this.nParticles);
     this.fy = new Float32Array(this.nParticles);
     this.mobile = new Uint8Array(this.nParticles);
+    this._preX = new Float32Array(this.nParticles);
+    this._preY = new Float32Array(this.nParticles);
     this.segP0 = d.segP0; this.segK = d.segK;
     this.segRest = d.segRest; this.segLen = d.segLen; this.segComp = d.segComp;
+    // A closed contig's polyline is a loop: its last vertex neighbours its
+    // first. Without that the ring is held by nothing and the curvature term
+    // straightens it back into a strand.
+    this.segClosed = d.segClosed || new Uint8Array(this.nSegments);
+    // Per segment: is it part of a closed molecule, and what radius should
+    // that ring have? Folded into per-component arrays by _buildComponentMap,
+    // which owns the dense component numbering.
+    this.segRing = d.segRing || null;
+    this.segRingRadius = d.segRingRadius || null;
     this.linkFrom = d.linkFrom; this.linkTo = d.linkTo;
     this.linkFromEnd = d.linkFromEnd; this.linkToEnd = d.linkToEnd;
     this.nLinks = this.linkFrom ? this.linkFrom.length : 0;
@@ -246,6 +320,7 @@ export class LayoutEngine {
     for (let i = 0; i < this.nSegments; i++) sum += this.segRest[i];
     this.unit = this.nSegments ? Math.max(4, sum / this.nSegments) : 25;
     this.repulsionScale = repulsionScaleFor(this.nSegments);
+    this._buildComponentMap();
     this.ready = this.nParticles > 0;
     this.running = false;
     return this.ready;
@@ -264,10 +339,105 @@ export class LayoutEngine {
   }
 
   /**
+   * Dense particle -> component index, plus the scratch accumulators the
+   * per-component gravity pass needs. Component ids in `segComp` are whatever
+   * the server assigned, so they are compacted to 0..n-1 here once rather than
+   * looked up every iteration.
+   */
+  _buildComponentMap() {
+    const dense = new Map();
+    this._particleComp = new Int32Array(this.nParticles);
+    for (let s = 0; s < this.nSegments; s++) {
+      const raw = this.segComp ? this.segComp[s] : 0;
+      let c = dense.get(raw);
+      if (c === undefined) { c = dense.size; dense.set(raw, c); }
+      const p0 = this.segP0[s], k = this.segK[s];
+      for (let i = 0; i < k; i++) this._particleComp[p0 + i] = c;
+    }
+    this._nComp = Math.max(1, dense.size);
+    this._gcx = new Float64Array(this._nComp);
+    this._gcy = new Float64Array(this._nComp);
+    this._gcn = new Int32Array(this._nComp);
+
+    // Fold the per-segment ring flags onto the dense component numbering.
+    this.compRing = new Uint8Array(this._nComp);
+    this.compRadius = new Float64Array(this._nComp);
+    if (this.segRing && this.segRingRadius) {
+      for (let s = 0; s < this.nSegments; s++) {
+        if (!this.segRing[s]) continue;
+        const c = this._particleComp[this.segP0[s]];
+        this.compRing[c] = 1;
+        this.compRadius[c] = this.segRingRadius[s];
+      }
+    }
+  }
+
+  _componentCount() { return this._nComp || 1; }
+
+  _compOfParticle(i) { return this._particleComp ? this._particleComp[i] : 0; }
+
+  /**
+   * Pack connected components into tidy rows instead of letting repulsion push
+   * them apart forever.
+   *
+   * Repulsion between components has nothing to balance it once gravity is
+   * per-component, so unrelated plasmids drift away without bound and the
+   * interesting component ends up a speck. Bandage sidesteps this by laying
+   * each component out separately and packing them with a fixed separation
+   * (`minDistCC`); this does the same, rigidly translating each component so
+   * its shape -- which the force model owns -- is never disturbed.
+   *
+   * Largest component first, then shelf-packing into rows whose width targets
+   * the view's aspect ratio, which reproduces Bandage's familiar "big component
+   * on top, small ones in rows underneath" arrangement.
+   */
+  _packComponents() {
+    const nComp = this._componentCount();
+    if (nComp < 2) return;
+    const { px, py, nParticles } = this;
+
+    const minX = new Float64Array(nComp).fill(Infinity);
+    const minY = new Float64Array(nComp).fill(Infinity);
+    const maxX = new Float64Array(nComp).fill(-Infinity);
+    const maxY = new Float64Array(nComp).fill(-Infinity);
+    for (let i = 0; i < nParticles; i++) {
+      const c = this._compOfParticle(i);
+      const x = px[i], y = py[i];
+      if (x < minX[c]) minX[c] = x;
+      if (x > maxX[c]) maxX[c] = x;
+      if (y < minY[c]) minY[c] = y;
+      if (y > maxY[c]) maxY[c] = y;
+    }
+
+    const pad = Math.max(this.unit * 2.5, this.params.componentPad || 0);
+    const boxes = [];
+    for (let c = 0; c < nComp; c++) {
+      if (!Number.isFinite(minX[c])) continue;
+      boxes.push({ c, w: maxX[c] - minX[c] + pad, h: maxY[c] - minY[c] + pad });
+    }
+    if (boxes.length < 2) return;
+    shelfPack(boxes, this.params.packAspect);
+
+    // Translate each component from where it sits to its slot.
+    const dx = new Float64Array(nComp);
+    const dy = new Float64Array(nComp);
+    for (const b of boxes) {
+      dx[b.c] = b.x - minX[b.c] + pad / 2;
+      dy[b.c] = b.y - minY[b.c] + pad / 2;
+    }
+    for (let i = 0; i < nParticles; i++) {
+      const c = this._compOfParticle(i);
+      px[i] += dx[c];
+      py[i] += dy[c];
+    }
+  }
+
+  /**
    * Prepare a run.
    * @param {string} mode one of LAYOUT_MODES
    * @param {Int32Array|null} subset mobile segment indices (null = everything)
-   * @param {object} params
+   * @param {object} params  DEFAULT_PARAMS overrides, plus an optional
+   *   `pinned` array of particle indices to hold still for the whole run
    */
   begin(mode, subset, params) {
     if (!this.ready) return false;
@@ -289,6 +459,22 @@ export class LayoutEngine {
     for (const s of segList) {
       const p0 = this.segP0[s], k = this.segK[s];
       for (let i = 0; i < k; i++) this.mobile[p0 + i] = 1;
+    }
+    // Pinned particles are held still even though their segment is mobile. This
+    // is what lets a dragged vertex stay under the pointer while the constraint
+    // solver relaxes the rest of its polyline -- and the graph -- around it.
+    const pinned = this.params.pinned;
+    // Component packing translates whole components rigidly, immobile
+    // particles included, so it would drag a pinned vertex out from under the
+    // pointer. A run with pins leaves the components where they are.
+    this.packing = !(pinned && pinned.length);
+    if (!this.packing) {
+      for (let i = 0; i < pinned.length; i++) {
+        // `| 0` alone would turn a caller's undefined into particle 0 and
+        // silently freeze the first vertex of the graph.
+        const p = Number(pinned[i]);
+        if (Number.isInteger(p) && p >= 0 && p < this.nParticles) this.mobile[p] = 0;
+      }
     }
     this.segList = segList;
 
@@ -351,8 +537,16 @@ export class LayoutEngine {
 
     /* --- 2. link springs ----------------------------------------------- */
     const ks = P.linkStrength;
-    const rest = P.linkRest;
+    const rest = unit * (P.linkRestFrac !== undefined ? P.linkRestFrac : 0.25);
     for (let l = 0; l < this.nLinks; l++) {
+      // A link from a segment to itself is a circular contig closing up. Its
+      // two particles are already held a fixed distance apart by the polyline's
+      // own distance constraints, so a spring pulling them to `rest` fights the
+      // constraint solver forever: the pair buzzes at full speed, `moved` never
+      // falls, and the layout burns its whole iteration budget without ever
+      // settling. Bandage drops these from the layout graph for the same
+      // reason; the renderer draws the loop instead.
+      if (this.linkFrom[l] === this.linkTo[l]) continue;
       const a = this.particleOf(this.linkFrom[l], this.linkFromEnd[l]);
       const b = this.particleOf(this.linkTo[l], this.linkToEnd[l]);
       if (a === b) continue;
@@ -385,21 +579,93 @@ export class LayoutEngine {
       }
     }
 
-    /* --- 4. gravity towards the centroid of the mobile set -------------- */
-    const g = P.gravity;
-    if (g > 0) {
-      let cx = 0, cy = 0, n = 0;
+    /* --- 3b. curvature stiffness --------------------------------------- */
+    // Penalise the turn at each interior vertex by pulling it towards the
+    // midpoint of its neighbours. Unlike the i<->i+2 distance spring this acts
+    // on the *shape* rather than the span, so a chain stays smooth however many
+    // vertices it has -- which is what lets long contigs sweep instead of
+    // buckling into a zigzag. Bandage gets the same effect from FMMM's
+    // multilevel solve; this is the cheap local equivalent.
+    const kc = P.curvature || 0;
+    if (kc > 0) {
+      for (let s = 0; s < nSegments; s++) {
+        const p0 = segP0[s], k = segK[s];
+        if (k < 3) continue;
+        // A loop has a turn at every vertex, including the two either side of
+        // the seam; skipping those leaves a visible corner where the ring
+        // closes.
+        const closed = this.segClosed[s];
+        const first = closed ? 0 : 1;
+        const last = closed ? k - 1 : k - 2;
+        for (let i = first; i <= last; i++) {
+          const a = p0 + (i - 1 + k) % k, b = p0 + i, c = p0 + (i + 1) % k;
+          const mx = (px[a] + px[c]) * 0.5;
+          const my = (py[a] + py[c]) * 0.5;
+          const ux = (mx - px[b]) * kc;
+          const uy = (my - py[b]) * kc;
+          if (mobile[b]) { fx[b] += ux * 2; fy[b] += uy * 2; }
+          // Equal and opposite, split over the two neighbours, so the term
+          // cannot translate the chain as a whole.
+          if (mobile[a]) { fx[a] -= ux; fy[a] -= uy; }
+          if (mobile[c]) { fx[c] -= ux; fy[c] -= uy; }
+        }
+      }
+    }
+
+    /* --- 3c. hold closed molecules open as rings ------------------------ */
+    // A circular molecule has no intrinsic 2D shape -- every drawing of the
+    // loop is equally true -- so the layout may as well pick the one that says
+    // "this is circular" at a glance. Left to itself a ring of contigs is
+    // neutrally stable: bending it costs nothing, so it crumples into a blob
+    // that hides the one fact worth showing. This pulls each vertex towards the
+    // radius the loop's own length implies, which restores the shape without
+    // pinning anything: links, repulsion and dragging all still act.
+    const kr = P.ringStrength || 0;
+    if (kr > 0 && this.compRing && this.compRadius) {
+      const nComp = this._componentCount();
+      const cxs = this._gcx, cys = this._gcy, cns = this._gcn;
+      cxs.fill(0); cys.fill(0); cns.fill(0);
+      for (let i = 0; i < nParticles; i++) {
+        const c = this._compOfParticle(i);
+        cxs[c] += px[i]; cys[c] += py[i]; cns[c]++;
+      }
+      for (let c = 0; c < nComp; c++) if (cns[c]) { cxs[c] /= cns[c]; cys[c] /= cns[c]; }
       for (let i = 0; i < nParticles; i++) {
         if (!mobile[i]) continue;
-        cx += px[i]; cy += py[i]; n++;
+        const c = this._compOfParticle(i);
+        if (!this.compRing[c]) continue;
+        const target = this.compRadius[c];
+        if (!(target > 0)) continue;
+        const dx = px[i] - cxs[c];
+        const dy = py[i] - cys[c];
+        const r = Math.hypot(dx, dy);
+        if (r < 1e-6) continue;
+        const f = kr * (target - r) / r;
+        fx[i] += dx * f;
+        fy[i] += dy * f;
       }
-      if (n) {
-        cx /= n; cy /= n;
-        for (let i = 0; i < nParticles; i++) {
-          if (!mobile[i]) continue;
-          fx[i] += (cx - px[i]) * g;
-          fy[i] += (cy - py[i]) * g;
-        }
+    }
+
+    /* --- 4. gravity towards each component's own centroid --------------- */
+    const g = P.gravity;
+    if (g > 0) {
+      const nComp = this._componentCount();
+      const cxs = this._gcx, cys = this._gcy, cns = this._gcn;
+      cxs.fill(0); cys.fill(0); cns.fill(0);
+      for (let i = 0; i < nParticles; i++) {
+        if (!mobile[i]) continue;
+        const c = this._compOfParticle(i);
+        cxs[c] += px[i]; cys[c] += py[i]; cns[c]++;
+      }
+      for (let c = 0; c < nComp; c++) {
+        if (cns[c]) { cxs[c] /= cns[c]; cys[c] /= cns[c]; }
+      }
+      for (let i = 0; i < nParticles; i++) {
+        if (!mobile[i]) continue;
+        const c = this._compOfParticle(i);
+        if (!cns[c]) continue;
+        fx[i] += (cxs[c] - px[i]) * g;
+        fy[i] += (cys[c] - py[i]) * g;
       }
     }
 
@@ -424,14 +690,28 @@ export class LayoutEngine {
     }
 
     /* --- 6. stiff intra-segment bonds via position constraints ---------- */
+    // The projection moves particles without touching their velocities, so the
+    // displacement it undoes comes straight back next step as kinetic energy.
+    // Recording the pre-projection positions lets the correction be folded back
+    // into the velocities, which is what stops long chains from shivering.
     const passes = Math.max(0, P.constraintPasses | 0);
+    const preX = passes > 0 ? this._preX : null;
+    const preY = passes > 0 ? this._preY : null;
+    if (preX) {
+      for (let i = 0; i < nParticles; i++) { preX[i] = px[i]; preY[i] = py[i]; }
+    }
     for (let pass = 0; pass < passes; pass++) {
       for (let s = 0; s < nSegments; s++) {
         const p0 = segP0[s], k = segK[s];
         if (k < 2) continue;
         const r = segRest[s];
-        for (let i = 0; i + 1 < k; i++) {
-          const a = p0 + i, b = a + 1;
+        // One more bond on a closed contig, joining its last vertex back to its
+        // first. That single constraint is what holds a circular molecule shut:
+        // its self-link is deliberately kept out of the spring set, so without
+        // this the ring has nothing to close it and unrolls into a strand.
+        const bonds = this.segClosed[s] ? k : k - 1;
+        for (let i = 0; i < bonds; i++) {
+          const a = p0 + i, b = p0 + ((i + 1) % k);
           const ma = mobile[a], mb = mobile[b];
           if (!ma && !mb) continue;
           let dx = px[b] - px[a];
@@ -452,13 +732,41 @@ export class LayoutEngine {
       }
     }
 
+    if (preX) {
+      // Fold the projection's displacement into the velocities rather than
+      // discarding it, and re-measure `moved` on the positions the drawing will
+      // actually use, so the settle test reflects the final state.
+      moved = 0;
+      for (let i = 0; i < nParticles; i++) {
+        if (!mobile[i]) continue;
+        const cx = px[i] - preX[i];
+        const cy = py[i] - preY[i];
+        vx[i] += cx;
+        vy[i] += cy;
+        const m = Math.abs(vx[i]) + Math.abs(vy[i]);
+        if (m > moved) moved = m;
+      }
+    }
+
+    /* --- 6b. keep components packed ------------------------------------ */
+    // Every few steps rather than every step: packing is a rigid translation so
+    // it never disturbs a component's shape, but doing it constantly makes the
+    // components visibly twitch while the sim is still moving them.
+    if (this.packing && this._nComp > 1 && (this.iter % 4) === 0) this._packComponents();
+
     /* --- 7. cool ------------------------------------------------------- */
     this.iter++;
     const t = this.iter / this.maxIter;
     this.alpha = t >= 1 ? 0 : Math.pow(1 - t, 1.4);
-    if (moved < 0.06) this.settledFor++; else this.settledFor = 0;
+    // Settling is judged relative to the drawing's own scale. An absolute
+    // threshold means a graph calibrated to large world units never looks
+    // settled and always burns the full iteration budget.
+    if (moved < unit * 0.0025) this.settledFor++; else this.settledFor = 0;
     const done = this.iter >= this.maxIter || this.settledFor > 24;
-    if (done) this.running = false;
+    if (done) {
+      if (this.packing && this._nComp > 1) this._packComponents();
+      this.running = false;
+    }
     return { done, iter: this.iter, alpha: this.alpha };
   }
 
@@ -615,6 +923,7 @@ export class LayoutEngine {
   _layoutLinear(segList, adj, comps, tx, ty) {
     const P = this.params;
     let yCursor = 0;
+    let prevHalf = null;
     for (const comp of comps) {
       const { rank, flip } = this._traverse(comp, adj, segList);
       // Normalise ranks to start at 0.
@@ -638,10 +947,15 @@ export class LayoutEngine {
         colX[r] = x;
         x += w + P.rankGap;
       }
+      // Measure the row stack before placing anything: the gap between two
+      // components is half of this one plus half of the *next* one, and
+      // advancing by this one's height twice let a tall fan of short contigs
+      // land straight on top of the thin chain above it.
       let height = 0;
+      for (let r = 0; r < nRanks; r++) height = Math.max(height, rows[r].length * P.rowGap);
+      yCursor += (prevHalf === null ? 0 : prevHalf + P.componentPad) + height / 2;
       for (let r = 0; r < nRanks; r++) {
         const list = rows[r];
-        height = Math.max(height, list.length * P.rowGap);
         list.sort((a, b) => this.segLen[segList[b]] - this.segLen[segList[a]]);
         for (let i = 0; i < list.length; i++) {
           const u = list[i];
@@ -652,28 +966,30 @@ export class LayoutEngine {
           this._emitLine(seg, px0, py0, flip.get(u), tx, ty);
         }
       }
-      yCursor += height / 2 + P.componentPad + height / 2;
+      prevHalf = height / 2;
     }
   }
 
   _layoutCircular(segList, adj, comps, tx, ty) {
     const P = this.params;
-    const gap = Math.max(12, P.linkRest);
-    // Lay each component on its own circle, then pack the circles into a grid.
-    const circles = [];
-    for (const comp of comps) {
+    // The arc between consecutive nodes is a link, so it gets a link's ideal
+    // length. An absolute floor here used to keep a whole graph's circles
+    // apart by more than the nodes on them were long.
+    const gap = this.unit * (P.linkRestFrac !== undefined ? P.linkRestFrac : 0.25);
+    // Lay each component on its own circle, then pack the circles.
+    const circles = comps.map((comp) => {
       const { order, flip } = this._traverse(comp, adj, segList);
       let circumference = 0;
       for (const u of order) circumference += this.segLen[segList[u]] + gap;
-      const R = Math.max(40, circumference / (2 * Math.PI));
-      circles.push({ order, flip, R });
-    }
-    const cols = Math.max(1, Math.ceil(Math.sqrt(circles.length)));
-    let cell = 0;
-    for (const c of circles) cell = Math.max(cell, c.R * 2 + P.componentPad);
-    circles.forEach((c, ci) => {
-      const ox = (ci % cols) * cell;
-      const oy = Math.floor(ci / cols) * cell;
+      // One short node still needs an arc it can be read along.
+      const R = Math.max(this.unit, circumference / (2 * Math.PI));
+      const d = R * 2 + P.componentPad;
+      return { order, flip, R, w: d, h: d };
+    });
+    shelfPack(circles, P.packAspect);
+    circles.forEach((c) => {
+      const ox = c.x + c.w / 2;
+      const oy = c.y + c.h / 2;
       let angle = 0;
       const R = c.R;
       for (const u of c.order) {
@@ -711,16 +1027,12 @@ export class LayoutEngine {
       if (!Number.isFinite(minX)) { minX = minY = 0; maxX = maxY = 1; }
       return { comp, minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
     });
-    boxes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
-    const cols = Math.max(1, Math.ceil(Math.sqrt(boxes.length)));
-    let cw = 0, ch = 0;
-    for (const b of boxes) { cw = Math.max(cw, b.w); ch = Math.max(ch, b.h); }
-    cw += P.componentPad; ch += P.componentPad;
-    boxes.forEach((b, i) => {
-      const cx = (i % cols) * cw + cw / 2;
-      const cy = Math.floor(i / cols) * ch + ch / 2;
-      const dx = cx - (b.minX + b.maxX) / 2;
-      const dy = cy - (b.minY + b.maxY) / 2;
+    const pad = P.componentPad;
+    for (const b of boxes) { b.w += pad; b.h += pad; }
+    shelfPack(boxes, P.packAspect);
+    boxes.forEach((b) => {
+      const dx = b.x + b.w / 2 - (b.minX + b.maxX) / 2;
+      const dy = b.y + b.h / 2 - (b.minY + b.maxY) / 2;
       for (const u of b.comp) {
         const seg = segList[u];
         const p0 = this.segP0[seg], k = this.segK[seg];

@@ -400,6 +400,7 @@ class Project:
                 built=self.build() if self.plan else None,
                 source_path=self.source_path,
                 reference_path=self.reference_path,
+                graph=self.graph,
             )
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(html)

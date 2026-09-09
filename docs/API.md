@@ -71,14 +71,35 @@ Body: `{"path": "contigs.paths"}` — attach SPAdes paths. Returns `{"added": 12
 ---
 
 ## `GET /api/graph`
-Query params: `min_length` (int, default 0), `max_nodes` (int, default 15000),
-`component` (int or omitted → all).
+
+Query params:
+
+| Param | Type | Default | Meaning |
+|---|---|---|---|
+| `scope` | `entire` \| `around` \| `depth` \| `component` | `entire` | Which part of the graph to draw |
+| `nodes` | comma-separated names | — | `around` only: the segments to expand from |
+| `distance` | int 0–100 | 0 | `around` only: how many steps outward from those segments |
+| `match` | `exact` \| `partial` | `exact` | How `nodes` are matched. `exact` tolerates a trailing `+`/`-`; `partial` takes every segment whose name contains the query |
+| `depth_min`, `depth_max` | float | — | `depth` only; either end may be omitted. A segment of unknown depth is in no range |
+| `component` | int | — | `component` only |
+| `min_length` | int | 0 | Narrows the pool every scope works within |
+| `max_nodes` | int | 15000 | Cap on segments returned |
+
+A link is returned only when **both** its endpoints are in scope, which is
+Bandage's rule.
+
+When the result exceeds `max_nodes` it is truncated by growing outward
+breadth-first from the scope's own seeds, so what comes back is still
+connected. It deliberately does **not** keep the longest segments: that leaves
+the caller holding a field of disconnected fragments, which is the least
+useful thing a graph viewer can show.
 
 ```json
 {
   "segments": [
     {"name": "ctg_1", "length": 19000, "depth": 31.2, "gc": 0.503,
      "component": 0, "deg_start": 0, "deg_end": 1, "circular": false,
+     "tags": {"dp": 31.2, "CL": "#7f3fbf"},
      "ref_hits": [{"ref": "chromosome", "r_st": 0, "r_en": 19000,
                    "strand": 1, "identity": 0.9989, "q_st": 0, "q_en": 19000,
                    "mapq": 60, "is_primary": true, "q_len": 19000,
@@ -86,12 +107,29 @@ Query params: `min_length` (int, default 0), `max_nodes` (int, default 15000),
   ],
   "links": [{"from": "a", "from_orient": "+", "to": "b", "to_orient": "+", "overlap": 0}],
   "paths": [{"name": "contig_1", "steps": ["1+", "2+", "4+"], "gaps": [1]}],
+  "scope": "entire",
+  "truncation": "none",
+  "dropped": [],
+  "missing": [],
   "truncated": false,
   "shown": 10,
   "total": 10,
   "references": ["chromosome", "plasmid"]
 }
 ```
+
+`tags` carries the segment's parsed GFA tags, with any string value longer than
+200 characters left out — aligners park whole CIGARs and read lists in `Z`
+tags, and the browser only wants the short ones it can colour or label with.
+Bandage's `CL`/`C2` (colour) and `LB`/`L2` (label) tags are all well under the
+limit. `GET /api/segment` returns the full, unbounded tag dict, since that is
+one segment on request.
+
+`truncation` names the rule that ran (`"none"` or
+`"breadth-first from the scope seeds"`). `dropped` is a list of
+`{"reason", "count"}` explaining what is not in the payload and why. `missing`
+lists the names in `nodes` that matched no segment; if *nothing* matched, the
+request is a 404 instead.
 
 **Link end convention (important for the renderer).** Each segment is drawn as a
 polyline with a `start` end and an `end` end. A link joins:
@@ -107,6 +145,29 @@ polyline with a `start` end and an `end` end. A link joins:
 
 ## `GET /api/segment/{name}`
 Returns full detail including `sequence` (string) and `neighbours`.
+
+---
+
+## `POST /api/fasta`
+Sequences for a whole selection, behind the studio's copy and save actions.
+
+```json
+{"names": ["ctg_1", "ctg_4-"], "wrap": 60}
+```
+
+A trailing `-` on a name asks for the reverse complement, and the record is
+headed with the name as written. `wrap` defaults to 60; `0` writes each
+sequence on one line.
+
+```json
+{"fasta": ">ctg_1\nACGT...\n", "segments": 2, "bases": 24400}
+```
+
+The total is measured before anything is built, so a request over 20 Mb is
+refused with a message naming its real size rather than after the server has
+already assembled it. An unknown name is a 404. A graph loaded without
+sequences — `*` placeholders with `LN:i` — gives a 400 saying so, rather than
+an empty file.
 
 ---
 
