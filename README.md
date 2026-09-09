@@ -151,9 +151,17 @@ by:
 - **Width follows read depth**, but damped — a contig at four times the mean
   depth is about 1.5× the mean width, not four times it, so one runaway repeat
   cannot flatten everything else.
+- **Connections are short and contigs are big.** A connection rests at an
+  eighth of a mean contig, so what you read is the contigs, joined — not beads
+  on strings. Edges are still drawn boldly enough to follow, and scale with the
+  view rather than thinning to a hairline as you zoom in.
 - **Edges leave a contig along its own direction**, as tangent-continuing
-  curves, which is what makes joined contigs read as one flowing strand instead
-  of bars wired together.
+  curves, and each contig is splined towards what it joins, so a run of contigs
+  reads as one flowing strand instead of bars meeting at corners.
+- **A replicon is laid out as the loop it is.** A chromosome with repeats in it
+  is a loop with chords, and starting it as a strand is what makes a long one
+  fold up on itself; started as a loop it stays an open tuft, which is the shape
+  the molecule actually has.
 - **A closed molecule is drawn as a ring.** A complete circular plasmid — one
   contig whose two ends join, or several joined nose to tail — comes out round,
   because that is the fact you opened the viewer to confirm and a loop drawn as
