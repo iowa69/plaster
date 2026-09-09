@@ -221,3 +221,61 @@ test('a component that is not a closed molecule is left alone', () => {
   assert.equal(walk.ring, false, 'a tree must not be treated as a ring');
   for (const seg of g.segments) assert.ok(!seg.closed);
 });
+
+test('smoothing the joins does not stretch the drawing into a line', () => {
+  // Straightening every join looks like the way to make a chain of contigs
+  // flow, and it is a trap: the term has no length limit, so chains pull
+  // straight and the whole graph extends into rays. Measured once at full
+  // strength on every join, the demo graph went from 952 units across to 6522
+  // and from square to a 10:1 streak. The relaxation is thresholded so it only
+  // touches real kinks; this pins that it stays bounded.
+  const n = 60;
+  const segments = Array.from({ length: n }, (_, i) => ({
+    name: 'c' + i, length: 6_000, depth: 30, gc: 0.5, component: 0,
+    deg_start: 1, deg_end: 1, circular: false, ref_hits: [],
+  }));
+  const links = Array.from({ length: n - 1 }, (_, i) => ({
+    from: 'c' + i, to: 'c' + (i + 1), from_orient: '+', to_orient: '+', overlap: 0,
+  }));
+
+  const extentOf = (params) => {
+    const { eng } = build({ segments, links });
+    eng.begin('force', null, params);
+    for (let i = 0; i < eng.maxIter; i++) if (eng._stepForce().done) break;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < eng.nParticles; i++) {
+      x0 = Math.min(x0, eng.px[i]); x1 = Math.max(x1, eng.px[i]);
+      y0 = Math.min(y0, eng.py[i]); y1 = Math.max(y1, eng.py[i]);
+    }
+    const w = x1 - x0, h = y1 - y0;
+    return { extent: Math.max(w, h), aspect: Math.max(w, h) / Math.max(1, Math.min(w, h)) };
+  };
+
+  const off = extentOf({ jointStrength: 0 });
+  const on = extentOf({});
+  assert.ok(on.extent < off.extent * 3,
+    `joint relaxation stretched the layout ${(on.extent / off.extent).toFixed(1)}x`);
+  assert.ok(on.aspect < 6, `layout collapsed towards a line: aspect ${on.aspect.toFixed(1)}`);
+});
+
+test('joint relaxation leaves gentle turns alone', () => {
+  // It must only spend force where the eye catches a corner. A chain already
+  // laid out straight has nothing to relax, so the term should be inert on it
+  // rather than quietly rearranging a layout that was already fine.
+  const { g, eng } = build(payload([new Array(10).fill(8_000)]));
+  // Lay the chain out perfectly straight, then check a step barely moves it.
+  let x = 0;
+  for (const seg of g.segments) {
+    for (let i = 0; i < seg.k; i++) {
+      eng.px[seg.p0 + i] = x + (seg.drawLen / Math.max(1, seg.k - 1)) * i;
+      eng.py[seg.p0 + i] = 0;
+    }
+    x += seg.drawLen + 5;
+  }
+  eng.begin('force', null, { repulsion: 0, gravity: 0, curvature: 0, linkStrength: 0 });
+  const before = Array.from(eng.py);
+  eng._stepForce();
+  let moved = 0;
+  for (let i = 0; i < eng.nParticles; i++) moved = Math.max(moved, Math.abs(eng.py[i] - before[i]));
+  assert.ok(moved < 1e-3, `a straight chain was disturbed by ${moved.toFixed(4)}`);
+});

@@ -245,6 +245,15 @@ export const DEFAULT_PARAMS = Object.freeze({
   // repulsion and the link springs, weak enough that dragging a contig still
   // deforms the ring under the pointer rather than fighting it.
   ringStrength: 0.35,
+  // Off. Straightening the joins between contigs looks like the way to make a
+  // chain flow, and it is a trap: the term has no length limit, so it pulls
+  // whole chains straight and the drawing stretches into a line. Measured on
+  // the demo graph, even 0.05 took the extent from 952 to 3777 units and the
+  // aspect ratio from 1.0 to 5.1. Smoothness across joins is a property of the
+  // drawing, not of the layout, and is handled in the renderer instead.
+  jointStrength: 0.35,
+  // Turns gentler than this (degrees) are left exactly as the layout put them.
+  jointRelaxAbove: 55,
   // Curvature stiffness, applied over triples of consecutive vertices. This is
   // what lets a polyline carry many vertices without buckling, so long contigs
   // can bend into sweeping curves instead of being held straight by starving
@@ -336,6 +345,13 @@ export class LayoutEngine {
 
   particleOf(seg, whichEnd) {
     return whichEnd === END_END ? this.segP0[seg] + this.segK[seg] - 1 : this.segP0[seg];
+  }
+
+  /** The vertex one step inward from an end; the end itself if there is none. */
+  innerOf(seg, whichEnd) {
+    const k = this.segK[seg];
+    if (k < 2) return this.segP0[seg];
+    return whichEnd === END_END ? this.segP0[seg] + k - 2 : this.segP0[seg] + 1;
   }
 
   /**
@@ -586,6 +602,19 @@ export class LayoutEngine {
     // vertices it has -- which is what lets long contigs sweep instead of
     // buckling into a zigzag. Bandage gets the same effect from FMMM's
     // multilevel solve; this is the cheap local equivalent.
+    // Pull the middle of a triple towards the midpoint of its neighbours, and
+    // push the neighbours back by half each so the term cannot translate the
+    // chain as a whole -- only straighten it.
+    const smoothTriple = (a, b, c, k) => {
+      const mx = (px[a] + px[c]) * 0.5;
+      const my = (py[a] + py[c]) * 0.5;
+      const ux = (mx - px[b]) * k;
+      const uy = (my - py[b]) * k;
+      if (mobile[b]) { fx[b] += ux * 2; fy[b] += uy * 2; }
+      if (mobile[a]) { fx[a] -= ux; fy[a] -= uy; }
+      if (mobile[c]) { fx[c] -= ux; fy[c] -= uy; }
+    };
+
     const kc = P.curvature || 0;
     if (kc > 0) {
       for (let s = 0; s < nSegments; s++) {
@@ -598,17 +627,52 @@ export class LayoutEngine {
         const first = closed ? 0 : 1;
         const last = closed ? k - 1 : k - 2;
         for (let i = first; i <= last; i++) {
-          const a = p0 + (i - 1 + k) % k, b = p0 + i, c = p0 + (i + 1) % k;
-          const mx = (px[a] + px[c]) * 0.5;
-          const my = (py[a] + py[c]) * 0.5;
-          const ux = (mx - px[b]) * kc;
-          const uy = (my - py[b]) * kc;
-          if (mobile[b]) { fx[b] += ux * 2; fy[b] += uy * 2; }
-          // Equal and opposite, split over the two neighbours, so the term
-          // cannot translate the chain as a whole.
-          if (mobile[a]) { fx[a] -= ux; fy[a] -= uy; }
-          if (mobile[c]) { fx[c] -= ux; fy[c] -= uy; }
+          smoothTriple(p0 + (i - 1 + k) % k, p0 + i, p0 + (i + 1) % k, kc);
         }
+      }
+    }
+
+    /* --- 3b2. straighten the joins between contigs ---------------------- */
+    // The curvature term above only smooths a contig's own vertices, and a
+    // typical contig has three of them, so it is nearly a straight bar. What
+    // the eye actually follows is the chain of bars, and nothing wanted
+    // consecutive bars to line up: joins turned through 62 degrees on average
+    // and the worst tenth doubled back, which is what made the drawing look
+    // shaky rather than fluid.
+    //
+    // Applying the same curvature over the triples that span a link -- the
+    // vertex before the join, the join, and the vertex after -- lets a run of
+    // contigs settle into one sweeping curve. Where several contigs meet, the
+    // terms compete and balance, which is the fan a branch point should have.
+    const kj = P.jointStrength || 0;
+    if (kj > 0) {
+      // Only the kinks. Smoothing every join pulls whole chains straight, and a
+      // straight chain takes more room than a curled one, so the drawing
+      // stretches: at full strength on every join the demo graph went from 952
+      // units across to 6522 and from square to a 10:1 streak. Leaving turns
+      // gentler than `jointRelaxAbove` alone keeps the layout's own shape and
+      // spends the force only where the eye actually catches a corner.
+      const cosLimit = Math.cos((P.jointRelaxAbove || 50) * Math.PI / 180);
+      const relax = (a, b, c) => {
+        const ux = px[b] - px[a], uy = py[b] - py[a];
+        const vx2 = px[c] - px[b], vy2 = py[c] - py[b];
+        const lu = Math.hypot(ux, uy), lv = Math.hypot(vx2, vy2);
+        if (lu < 1e-6 || lv < 1e-6) return;
+        const cos = (ux * vx2 + uy * vy2) / (lu * lv);
+        if (cos >= cosLimit) return; // already gentle enough to leave alone
+        // Ramp in over the sharper half of the range so there is no step at the
+        // threshold, which would make contigs flicker between two shapes.
+        smoothTriple(a, b, c, kj * Math.min(1, (cosLimit - cos) / 1.2));
+      };
+      for (let l = 0; l < this.nLinks; l++) {
+        if (this.linkFrom[l] === this.linkTo[l]) continue;
+        const a = this.particleOf(this.linkFrom[l], this.linkFromEnd[l]);
+        const b = this.particleOf(this.linkTo[l], this.linkToEnd[l]);
+        const ai = this.innerOf(this.linkFrom[l], this.linkFromEnd[l]);
+        const bi = this.innerOf(this.linkTo[l], this.linkToEnd[l]);
+        if (ai === a || bi === b) continue;
+        relax(ai, a, b);
+        relax(a, b, bi);
       }
     }
 

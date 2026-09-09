@@ -18,7 +18,7 @@
  *   exactly what you see.
  */
 
-import { fmtBp, fmtNum, perBaseScaleFor } from './graph.js';
+import { fmtBp, fmtNum, perBaseScaleFor, END_START, END_END } from './graph.js';
 
 /* ====================================================================== */
 /*  Colour ramps                                                           */
@@ -70,6 +70,14 @@ const WIDTH_BUCKETS = 48;
  * the curve's reach matches the gap the layout leaves.
  */
 const EDGE_EXTENSION_WORLD = 5;
+
+/**
+ * Catmull-Rom tension, as the fraction of the neighbour span that becomes the
+ * Bezier control arm. 1/6 is the textbook value that makes the spline pass
+ * through its points with a continuous tangent; a little under keeps a sharp
+ * turn from overshooting into a loop.
+ */
+const SPLINE_TENSION = 0.155;
 
 /** Widest a node body should get, in CSS pixels, when a fit zooms in. */
 const MAX_NODE_BODY_PX = 44;
@@ -963,6 +971,47 @@ export class Renderer {
    * `trimPx` stops the stroke short of the final vertex, leaving room for the
    * arrowhead wedge (`_arrowPath`) to finish the node.
    */
+
+  /**
+   * The vertex just inside each neighbouring contig, for every contig end.
+   *
+   * A turn between two contigs used to happen entirely in the short link
+   * between them, which put a corner in a drawing that should read as one
+   * flowing strand. Knowing what is on the far side of each end lets the spline
+   * enter and leave a contig already aimed at its neighbours, so the turn is
+   * spread along the contigs instead of concentrated at the join.
+   *
+   * Cached per graph revision: this walks the adjacency, and paint() runs on
+   * every frame.
+   */
+  _neighbourVertices() {
+    const g = this.graph;
+    if (this._ghostRev === g.revision && this._ghostStart) {
+      return { start: this._ghostStart, end: this._ghostEnd };
+    }
+    const n = g.segments.length;
+    const start = new Int32Array(n).fill(-1);
+    const end = new Int32Array(n).fill(-1);
+    for (const seg of g.segments) {
+      for (const e of g.adj[seg.idx] || []) {
+        if (e.seg === seg.idx) continue; // a self-link has no far side
+        const other = g.segments[e.seg];
+        if (!other) continue;
+        // One step into the neighbour, so the direction is the neighbour's, not
+        // the near-zero step across the gap.
+        const ghost = e.otherEnd === END_END
+          ? other.p0 + Math.max(0, other.k - 2)
+          : other.p0 + Math.min(other.k - 1, 1);
+        const slot = e.selfEnd === END_START ? start : end;
+        if (slot[seg.idx] < 0) slot[seg.idx] = ghost;
+      }
+    }
+    this._ghostRev = g.revision;
+    this._ghostStart = start;
+    this._ghostEnd = end;
+    return { start, end };
+  }
+
   _segPath(ctx, si, smooth, trimPx = 0) {
     const g = this.graph;
     const seg = g.segments[si];
@@ -1004,22 +1053,53 @@ export class Renderer {
         ex -= dx * t; ey -= dy * t;
       }
     }
-    if (!smooth || k === 2) {
+    if (!smooth) {
       ctx.moveTo(px[p0] * s + ox, py[p0] * s + oy);
       for (let i = 1; i < k - 1; i++) ctx.lineTo(px[p0 + i] * s + ox, py[p0 + i] * s + oy);
       ctx.lineTo(ex, ey);
       return;
     }
-    // Quadratic spline through particle midpoints: smooth without overshoot.
-    ctx.moveTo(px[p0] * s + ox, py[p0] * s + oy);
-    for (let i = 1; i < k - 1; i++) {
-      const cxp = px[p0 + i] * s + ox, cyp = py[p0 + i] * s + oy;
-      const end = i + 1 === k - 1;
-      const nxp = end ? ex : px[p0 + i + 1] * s + ox;
-      const nyp = end ? ey : py[p0 + i + 1] * s + oy;
-      ctx.quadraticCurveTo(cxp, cyp, (cxp + nxp) / 2, (cyp + nyp) / 2);
+
+    // Catmull-Rom through the contig's own vertices, with a control point taken
+    // from the contig on the far side of each end. A contig has three vertices
+    // on average, so a spline over its own points alone is barely a curve and
+    // the drawing is really a chain of straight bars meeting at angles -- the
+    // thing that makes a graph look shaky rather than fluid. Borrowing the
+    // neighbours' vertices bends each contig towards what it joins, and the
+    // turn is spread over two contig bodies instead of one short link.
+    const ghosts = this._neighbourVertices();
+    const gs = ghosts.start[si];
+    const ge = ghosts.end[si];
+    const X = (i) => px[p0 + i] * s + ox;
+    const Y = (i) => py[p0 + i] * s + oy;
+
+    // Point before the first vertex, and after the last.
+    let bx, by;
+    if (gs >= 0) { bx = px[gs] * s + ox; by = py[gs] * s + oy; }
+    else { bx = 2 * X(0) - X(1); by = 2 * Y(0) - Y(1); }   // mirror: straight out
+    let axx, ayy;
+    if (ge >= 0 && trimPx <= 0) { axx = px[ge] * s + ox; ayy = py[ge] * s + oy; }
+    else { axx = 2 * ex - X(k - 2); ayy = 2 * ey - Y(k - 2); }
+
+    const pt = (i) => {
+      if (i < 0) return [bx, by];
+      if (i > k - 1) return [axx, ayy];
+      if (i === k - 1) return [ex, ey];
+      return [X(i), Y(i)];
+    };
+
+    ctx.moveTo(X(0), Y(0));
+    for (let i = 0; i < k - 1; i++) {
+      const [x0, y0] = pt(i - 1);
+      const [x1, y1] = pt(i);
+      const [x2, y2] = pt(i + 1);
+      const [x3, y3] = pt(i + 2);
+      ctx.bezierCurveTo(
+        x1 + (x2 - x0) * SPLINE_TENSION, y1 + (y2 - y0) * SPLINE_TENSION,
+        x2 - (x3 - x1) * SPLINE_TENSION, y2 - (y3 - y1) * SPLINE_TENSION,
+        x2, y2,
+      );
     }
-    ctx.lineTo(ex, ey);
   }
 
   /**
