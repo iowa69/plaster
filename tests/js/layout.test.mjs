@@ -279,3 +279,45 @@ test('joint relaxation leaves gentle turns alone', () => {
   for (let i = 0; i < eng.nParticles; i++) moved = Math.max(moved, Math.abs(eng.py[i] - before[i]));
   assert.ok(moved < 1e-3, `a straight chain was disturbed by ${moved.toFixed(4)}`);
 });
+
+test('a chromosome with repeats stays an open loop instead of folding', () => {
+  // The failure this guards: a long replicon seeded as a strand cannot fit in a
+  // compact area except by folding, and a single-level force model has no way
+  // back out of that -- the result looked like a folded protein rather than a
+  // molecule. A replicon with repeats in it is a loop with chords, so it is
+  // seeded as a loop and should still read as one afterwards.
+  const n = 100;
+  const segments = Array.from({ length: n }, (_, i) => ({
+    name: 'c' + i, length: 9_000, depth: 30, gc: 0.5, component: 0,
+    deg_start: 1, deg_end: 1, circular: false, ref_hits: [],
+  }));
+  const links = Array.from({ length: n }, (_, i) => ({
+    from: 'c' + i, to: 'c' + ((i + 1) % n), from_orient: '+', to_orient: '+', overlap: 0,
+  }));
+  // Chords, as a collapsed repeat visited from several places would make.
+  for (let k = 0; k < 10; k++) {
+    links.push({
+      from: 'c' + (k * 7 % n), to: 'c' + ((k * 7 + 31) % n),
+      from_orient: '+', to_orient: '+', overlap: 0,
+    });
+  }
+
+  const { g, eng } = build({ segments, links });
+  run(eng);
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < eng.nParticles; i++) {
+    x0 = Math.min(x0, eng.px[i]); x1 = Math.max(x1, eng.px[i]);
+    y0 = Math.min(y0, eng.py[i]); y1 = Math.max(y1, eng.py[i]);
+  }
+  const w = x1 - x0, h = y1 - y0;
+  const aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
+  assert.ok(aspect < 2.5, `folded into a strip: aspect ${aspect.toFixed(2)}`);
+
+  // And it should still be open: a loop of this much contig has a diameter, and
+  // a folded one collapses well inside it.
+  const total = g.segments.reduce((a, s) => a + s.drawLen, 0);
+  const openDiameter = total / Math.PI;
+  assert.ok(Math.max(w, h) > openDiameter * 0.35,
+    `collapsed: ${Math.max(w, h).toFixed(0)} across vs ${openDiameter.toFixed(0)} for an open loop`);
+});

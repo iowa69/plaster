@@ -973,7 +973,25 @@ export class GraphModel {
     const closedWalk = excess === 1
       && segs.every((si) => (this.adj[si] || []).filter((e) => inComp.has(e.seg)).length === 2);
 
-    return { order, ring: selfLooped || closedWalk, selfLooped, excess };
+    // Two different questions, and they need different answers.
+    //
+    // `ring` is "is this a closed molecule?" -- strict, because it drives a
+    // force that holds the component to a circle, and imposing a circle on a
+    // graph that is not one would be a lie.
+    //
+    // `cyclic` is "does this close at all?" -- loose, and it only chooses the
+    // starting shape. A chromosome with repeats in it is a loop with chords,
+    // not a strand, and seeding it as a strand is what made it fold up like a
+    // protein: a 150-contig line cannot fit in a compact area except by
+    // folding, and the force model has no way back out of that. Seeded as a
+    // loop it stays a loop, which is what the molecule actually is.
+    return {
+      order,
+      ring: selfLooped || closedWalk,
+      cyclic: excess >= 1,
+      selfLooped,
+      excess,
+    };
   }
 
   /**
@@ -1011,7 +1029,7 @@ export class GraphModel {
       // meet its own start, and a spare gap would leave the ring visibly open.
       if (walk.ring) perimeter -= walk.selfLooped ? gap : 0;
       // A ring of this perimeter is that wide across; a line is its own length.
-      const extent = walk.ring ? perimeter / Math.PI : perimeter;
+      const extent = walk.cyclic ? perimeter / Math.PI : perimeter;
       return { ...walk, perimeter, extent };
     });
 
@@ -1023,7 +1041,7 @@ export class GraphModel {
       const gx = (ci % cols) * cell;
       const gy = Math.floor(ci / cols) * cell;
 
-      if (plan.ring) {
+      if (plan.cyclic) {
         // Radius chosen so the contigs laid end to end exactly close the ring.
         const R = plan.perimeter / (2 * Math.PI);
         let s = 0;

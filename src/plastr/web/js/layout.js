@@ -238,7 +238,12 @@ export const DEFAULT_PARAMS = Object.freeze({
   // contigs sit end to end. An absolute value cannot work: once the drawn scale
   // is calibrated per graph, a fixed 24 units is longer than an entire contig
   // on a large assembly, and the drawing becomes dots joined by long leaders.
-  linkRestFrac: 0.6,
+  // Bandage's ratio exactly: an edge's ideal length is `edgeLength` 5.0 against
+  // a `nodeSegmentLength` of 20.0, so a connection is a quarter of one polyline
+  // step and an eighth of a mean contig. Connections are meant to be short --
+  // the contigs are the picture, and a longer rest length turns them into beads
+  // on strings.
+  linkRestFrac: 0.25,
   // Keeps a long contig reading as a smooth sweep rather than a squiggle.
   bendStrength: 0.90,
   // How firmly a closed molecule is held to a circle. Strong enough to survive
