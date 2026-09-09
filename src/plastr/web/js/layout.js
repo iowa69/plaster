@@ -230,7 +230,7 @@ export const DEFAULT_PARAMS = Object.freeze({
   // the value that reproduces that on both a 10-segment and a 285-segment
   // graph. The previous 0.05 predated the per-graph length calibration and left
   // small graphs with gaps twice the length of the contigs they joined.
-  repulsion: 0.01,
+  repulsion: 0.12,
   linkStrength: 1.80,
   // Rest length of a link, **as a fraction of the mean intra-segment spacing**.
   // Bandage gives real edges an ideal length of 5.0 against a node segment
@@ -244,6 +244,10 @@ export const DEFAULT_PARAMS = Object.freeze({
   // the contigs are the picture, and a longer rest length turns them into beads
   // on strings.
   linkRestFrac: 0.25,
+  // How much of a connection's length error is corrected per constraint pass.
+  // Enough to keep connections short under repulsion, short of 1 so a graph
+  // that cannot satisfy every connection at once relaxes instead of jittering.
+  linkStiffness: 0.5,
   // Keeps a long contig reading as a smooth sweep rather than a squiggle.
   bendStrength: 0.90,
   // How firmly a closed molecule is held to a circle. Strong enough to survive
@@ -267,7 +271,12 @@ export const DEFAULT_PARAMS = Object.freeze({
   // Pull towards the component's own centre, not the whole drawing's. A global
   // centroid packs every component into one disc, which is why unrelated
   // plasmids used to be threaded through the chromosome.
-  gravity: 0.02,
+  // Off. Pulling every contig towards its component's centre packs the drawing
+  // into a uniformly dense disc, which is what a graph layout must not do: the
+  // long loops between repeats are the structure, and they can only be seen if
+  // they are free to reach outwards. Components are kept together by packing
+  // them explicitly, so nothing needs gravity to stop it drifting.
+  gravity: 0,
   damping: 0.82,
   theta: 0.75,
   maxIter: 600,
@@ -769,7 +778,40 @@ export class LayoutEngine {
     if (preX) {
       for (let i = 0; i < nParticles; i++) { preX[i] = px[i]; preY[i] = py[i]; }
     }
+    const linkRest = unit * (P.linkRestFrac !== undefined ? P.linkRestFrac : 0.25);
+    const linkStiff = Math.max(0, Math.min(1, P.linkStiffness === undefined ? 0.5 : P.linkStiffness));
     for (let pass = 0; pass < passes; pass++) {
+      // Hold connections to their length the same way a contig's own spacing is
+      // held: by projection, not by a spring. A spring loses. The spacing
+      // inside a contig is a hard constraint applied every pass, so when
+      // repulsion rises to open the drawing out, the contigs keep their length
+      // and the connections take up all the slack -- stretching to two units
+      // and turning the picture into beads on strings. Constraining them too
+      // lets repulsion spread the graph while connections stay short.
+      if (linkStiff > 0) {
+        for (let l = 0; l < this.nLinks; l++) {
+          if (this.linkFrom[l] === this.linkTo[l]) continue;
+          const a = this.particleOf(this.linkFrom[l], this.linkFromEnd[l]);
+          const b = this.particleOf(this.linkTo[l], this.linkToEnd[l]);
+          if (a === b) continue;
+          const ma = mobile[a], mb = mobile[b];
+          if (!ma && !mb) continue;
+          let dx = px[b] - px[a];
+          let dy = py[b] - py[a];
+          let d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 1e-4) continue;
+          const corr = ((d - linkRest) / d) * linkStiff;
+          if (ma && mb) {
+            const hx = dx * corr * 0.5, hy = dy * corr * 0.5;
+            px[a] += hx; py[a] += hy;
+            px[b] -= hx; py[b] -= hy;
+          } else if (ma) {
+            px[a] += dx * corr; py[a] += dy * corr;
+          } else {
+            px[b] -= dx * corr; py[b] -= dy * corr;
+          }
+        }
+      }
       for (let s = 0; s < nSegments; s++) {
         const p0 = segP0[s], k = segK[s];
         if (k < 2) continue;

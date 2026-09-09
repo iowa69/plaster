@@ -342,6 +342,36 @@ export class ColourMapper {
         return this;
       }
 
+      case 'path': {
+        // Which scaffold each contig belongs to. A GFA path is the assembler's
+        // own statement that these contigs are one molecule, and it is the
+        // thing a drawing most easily loses: a circular replicon in twenty
+        // pieces is twenty unrelated colours unless something says otherwise.
+        // Contigs in no path stay grey, so what is scaffolded and what is not
+        // reads at a glance.
+        const paths = graph.paths || [];
+        this.palette = [grey].concat(paths.map((_, i) => CATEGORICAL[i % CATEGORICAL.length]));
+        for (const s of graph.segments) {
+          const inPaths = graph.pathsForSegment(s.idx);
+          // A contig shared by several paths takes the first, which is the
+          // longest -- the scaffold it mostly belongs to.
+          this.segPal[s.idx] = inPaths.length ? (inPaths[0].idx % (this.palette.length - 1)) + 1 : 0;
+        }
+        const placed = graph.segments.filter((s) => this.segPal[s.idx] > 0).length;
+        this.legend = {
+          type: 'cat',
+          label: paths.length ? 'scaffold (GFA path)' : 'no paths in this graph',
+          items: paths.slice(0, 14).map((pth, i) => ({
+            colour: this.palette[(i % (this.palette.length - 1)) + 1],
+            label: `${pth.name} · ${pth.segs.length} contig${pth.segs.length === 1 ? '' : 's'}`,
+          })).concat(placed < graph.segments.length
+            ? [{ colour: grey, label: `${graph.segments.length - placed} not in any path` }]
+            : []),
+          more: Math.max(0, paths.length - 14),
+        };
+        return this;
+      }
+
       case 'random': {
         // One colour per node, seeded from its name so it is stable across
         // reloads. This is Bandage's default and it is the most legible way to

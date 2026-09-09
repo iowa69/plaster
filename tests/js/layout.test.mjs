@@ -223,12 +223,18 @@ test('a component that is not a closed molecule is left alone', () => {
 });
 
 test('smoothing the joins does not stretch the drawing into a line', () => {
-  // Straightening every join looks like the way to make a chain of contigs
-  // flow, and it is a trap: the term has no length limit, so chains pull
-  // straight and the whole graph extends into rays. Measured once at full
-  // strength on every join, the demo graph went from 952 units across to 6522
-  // and from square to a 10:1 streak. The relaxation is thresholded so it only
-  // touches real kinks; this pins that it stays bounded.
+  // An invariant, not a regression guard: the drawing must stay bounded however
+  // hard the joins are relaxed. Straightening every join once took the demo
+  // graph from 952 units across to 6522 and from square to a 10:1 streak. That
+  // exact failure can no longer be reproduced here, because connection length
+  // is now held by a constraint rather than a spring and the force balance
+  // changed underneath it -- so treat this as a cheap check that the property
+  // still holds, not as a test that would catch the old bug returning.
+  // A branched graph, not a bare chain. A chain of contigs with nothing else
+  // attached genuinely does settle straight -- that is its lowest-energy shape
+  // and what any force layout produces -- so it cannot tell a healthy layout
+  // from a stretched one. A real assembly has branches, and those are what get
+  // pulled into a streak when the relaxation is unbounded.
   const n = 60;
   const segments = Array.from({ length: n }, (_, i) => ({
     name: 'c' + i, length: 6_000, depth: 30, gc: 0.5, component: 0,
@@ -237,6 +243,15 @@ test('smoothing the joins does not stretch the drawing into a line', () => {
   const links = Array.from({ length: n - 1 }, (_, i) => ({
     from: 'c' + i, to: 'c' + (i + 1), from_orient: '+', to_orient: '+', overlap: 0,
   }));
+  // Side branches every fifth contig, as bubbles and repeats make.
+  for (let i = 5; i < n - 5; i += 5) {
+    segments.push({
+      name: 'b' + i, length: 4_000, depth: 20, gc: 0.5, component: 0,
+      deg_start: 1, deg_end: 1, circular: false, ref_hits: [],
+    });
+    links.push({ from: 'c' + i, to: 'b' + i, from_orient: '+', to_orient: '+', overlap: 0 });
+    links.push({ from: 'b' + i, to: 'c' + (i + 2), from_orient: '+', to_orient: '+', overlap: 0 });
+  }
 
   const extentOf = (params) => {
     const { eng } = build({ segments, links });
@@ -252,10 +267,17 @@ test('smoothing the joins does not stretch the drawing into a line', () => {
   };
 
   const off = extentOf({ jointStrength: 0 });
-  const on = extentOf({});
-  assert.ok(on.extent < off.extent * 3,
-    `joint relaxation stretched the layout ${(on.extent / off.extent).toFixed(1)}x`);
-  assert.ok(on.aspect < 6, `layout collapsed towards a line: aspect ${on.aspect.toFixed(1)}`);
+  for (const strength of [0.35, 1.0, 2.0]) {
+    // Checked across the range, not just at the shipped value. Connection
+    // length is now held by a constraint rather than a spring, which is what
+    // actually stops the stretching; asserting only at the default would pass
+    // even if the relaxation went unbounded again behind that protection.
+    const on = extentOf({ jointStrength: strength, jointRelaxAbove: 0 });
+    assert.ok(on.extent < off.extent * 3,
+      `jointStrength ${strength} stretched the layout ${(on.extent / off.extent).toFixed(1)}x`);
+    assert.ok(on.aspect < 6,
+      `jointStrength ${strength} collapsed it towards a line: aspect ${on.aspect.toFixed(1)}`);
+  }
 });
 
 test('joint relaxation leaves gentle turns alone', () => {
@@ -281,11 +303,13 @@ test('joint relaxation leaves gentle turns alone', () => {
 });
 
 test('a chromosome with repeats stays an open loop instead of folding', () => {
-  // The failure this guards: a long replicon seeded as a strand cannot fit in a
-  // compact area except by folding, and a single-level force model has no way
-  // back out of that -- the result looked like a folded protein rather than a
-  // molecule. A replicon with repeats in it is a loop with chords, so it is
-  // seeded as a loop and should still read as one afterwards.
+  // A long replicon seeded as a strand cannot fit in a compact area except by
+  // folding, and a single-level force model has no way back out of that -- the
+  // result looked like a folded protein rather than a molecule. Two separate
+  // changes now prevent it, seeding a loop as a loop and dropping the gravity
+  // that packed everything inwards, so removing either one alone no longer
+  // reproduces the fold. This asserts the property that matters: a replicon
+  // comes out open, whatever keeps it that way.
   const n = 100;
   const segments = Array.from({ length: n }, (_, i) => ({
     name: 'c' + i, length: 9_000, depth: 30, gc: 0.5, component: 0,

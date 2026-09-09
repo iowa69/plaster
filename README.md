@@ -189,6 +189,7 @@ the colours currently mean.
 | **GC content** | A ramp over GC fraction |
 | **length** | A ramp over contig length |
 | **connected component** | One colour per component |
+| **scaffold (GFA path)** | One colour per `P`-line, so the contigs the assembler says are one molecule read as one molecule. Contigs in no path stay grey, so what is scaffolded and what is not shows at a glance |
 | **random per component** | As above, with unrelated hues |
 | **reference chromosome** | Which reference sequence each part aligned to, painted as sub-spans along the contig |
 | **search / BLAST hit** | Where your query hit, painted along the contig; optionally in rainbow order by position in the query |
