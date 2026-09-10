@@ -591,6 +591,17 @@ def cmd_diff(args) -> int:
     _print_diff_side(result.a, label_b)
     _print_diff_side(result.b, label_a)
 
+    if args.outdir:
+        from .core.analysis.diff import write_outputs
+
+        written = write_outputs(
+            result, projects[0].graph, projects[1].graph, args.outdir,
+            overwrite=args.overwrite, min_span=args.min_region,
+        )
+        print(f"\n  written to {args.outdir}/")
+        for kind, path, count in written:
+            print(f"    {kind:<15} {os.path.basename(path):<34} {count:>6,} record(s)")
+
     if args.json:
         import json
         with open(args.json, "w", encoding="utf-8") as fh:
@@ -878,6 +889,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("--present-fraction", type=float, default=0.10, metavar="F",
                         help="below this counts as missing rather than partial (default 0.10)")
     p_diff.add_argument("-t", "--threads", type=int, default=os.cpu_count() or 4)
+    p_diff.add_argument("-o", "--outdir", metavar="DIR",
+                        help="write the unique contigs, the novel regions and TSV tables here")
+    p_diff.add_argument("--overwrite", action="store_true",
+                        help="replace files already in the output directory")
+    p_diff.add_argument("--min-region", type=int, default=200, metavar="BP",
+                        help="shortest novel region written to the regions FASTA (default 200)")
     p_diff.add_argument("--html", help="write a comparison report here")
     p_diff.add_argument("--json", help="write the full comparison as JSON here")
     p_diff.set_defaults(func=cmd_diff)

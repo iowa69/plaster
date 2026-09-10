@@ -32,11 +32,13 @@ from ..model import AssemblyGraph
 from . import align as align_mod
 
 __all__ = [
+    "invert_spans",
     "ContigDiff",
     "ComponentDiff",
     "AssemblySide",
     "GraphDiff",
     "diff_graphs",
+    "write_outputs",
     "SHARED_FRACTION",
     "PRESENT_FRACTION",
 ]
@@ -62,6 +64,11 @@ class ContigDiff:
     best_match: str | None
     best_identity: float | None
     status: str  # "shared" | "partial" | "missing"
+    #: Half-open [start, end) runs of this contig that nothing in the other
+    #: assembly aligns to. This is the sequence that is actually new, and it is
+    #: what gets written out -- a partial contig's novel insert is the
+    #: interesting part of it, not the whole contig.
+    uncovered_spans: list[tuple[int, int]] = field(default_factory=list)
 
     @property
     def covered_fraction(self) -> float:
@@ -83,6 +90,7 @@ class ContigDiff:
             "best_match": self.best_match,
             "best_identity": self.best_identity,
             "status": self.status,
+            "uncovered_spans": [list(sp) for sp in self.uncovered_spans],
         }
 
 
@@ -130,6 +138,10 @@ class AssemblySide:
     components: list[ComponentDiff] = field(default_factory=list)
     #: Contigs with no sequence, which cannot be compared at all.
     without_sequence: int = 0
+    #: (this contig, other contig, aligned bases), heaviest first. The edges of
+    #: the entanglement map: which contig over there accounts for which contig
+    #: over here.
+    matches: list[tuple[str, str, int]] = field(default_factory=list)
 
     def _bases(self, status: str) -> int:
         return sum(c.length for c in self.contigs if c.status == status)
@@ -188,6 +200,7 @@ class AssemblySide:
             "counts": self.counts(),
             "contigs": [c.to_dict() for c in self.contigs],
             "components": [c.to_dict() for c in self.components],
+            "matches": [list(m) for m in self.matches],
         }
 
 
@@ -213,21 +226,38 @@ class GraphDiff:
         }
 
 
+def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Overlapping intervals collapsed into disjoint ones, in order."""
+    if not spans:
+        return []
+    ordered = sorted(spans)
+    out = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        if start > out[-1][1]:
+            out.append([start, end])
+        else:
+            out[-1][1] = max(out[-1][1], end)
+    return [(a, b) for a, b in out]
+
+
 def _merged_length(spans: Sequence[tuple[int, int]]) -> int:
     """Total length of a set of intervals, counting overlaps once."""
-    if not spans:
-        return 0
-    ordered = sorted(spans)
-    total = 0
-    cur_start, cur_end = ordered[0]
-    for start, end in ordered[1:]:
-        if start > cur_end:
-            total += cur_end - cur_start
-            cur_start, cur_end = start, end
-        else:
-            cur_end = max(cur_end, end)
-    total += cur_end - cur_start
-    return total
+    return sum(b - a for a, b in _merge_spans(spans))
+
+
+def invert_spans(spans: Sequence[tuple[int, int]], length: int) -> list[tuple[int, int]]:
+    """The gaps between a set of intervals, over [0, length)."""
+    out: list[tuple[int, int]] = []
+    cursor = 0
+    for start, end in _merge_spans(spans):
+        start = max(0, min(start, length))
+        end = max(0, min(end, length))
+        if start > cursor:
+            out.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < length:
+        out.append((cursor, length))
+    return out
 
 
 def _write_contigs(graph: AssemblyGraph, path: str) -> int:
@@ -279,8 +309,11 @@ def _score_side(
 
     spans: dict[str, list[tuple[int, int]]] = {}
     best: dict[str, tuple[float, str]] = {}
+    weights: dict[tuple[str, str], int] = {}
     for h in hits:
         spans.setdefault(h.query, []).append((h.q_st, h.q_en))
+        key = (h.query, h.ref)
+        weights[key] = weights.get(key, 0) + max(0, h.q_span)
         score = h.q_span * max(h.identity, 0.0)
         prev = best.get(h.query)
         if prev is None or score > prev[0]:
@@ -300,7 +333,8 @@ def _score_side(
     for name, seg in graph.segments.items():
         if not seg.sequence:
             without_sequence += 1
-        covered = min(seg.length, _merged_length(spans.get(name, [])))
+        merged = _merge_spans(spans.get(name, []))
+        covered = min(seg.length, sum(b - a for a, b in merged))
         fraction = (covered / seg.length) if seg.length else 0.0
         contigs.append(
             ContigDiff(
@@ -313,6 +347,7 @@ def _score_side(
                 best_match=best.get(name, (0.0, None))[1],
                 best_identity=identity_of.get(name),
                 status=_classify(fraction, shared_at, present_at),
+                uncovered_spans=invert_spans(merged, seg.length),
             )
         )
     contigs.sort(key=lambda c: -c.length)
@@ -343,6 +378,10 @@ def _score_side(
         contigs=contigs,
         components=comp_rows,
         without_sequence=without_sequence,
+        matches=sorted(
+            ((q, r, w) for (q, r), w in weights.items()),
+            key=lambda m: -m[2],
+        ),
     )
 
 
@@ -401,3 +440,104 @@ def diff_graphs(
         shared_fraction=shared_fraction,
         present_fraction=present_fraction,
     )
+
+
+def write_outputs(
+    diff: "GraphDiff",
+    graph_a: AssemblyGraph,
+    graph_b: AssemblyGraph,
+    outdir: str | os.PathLike[str],
+    overwrite: bool = False,
+    min_span: int = 200,
+) -> list[tuple[str, str, int]]:
+    """Write the comparison out as files you can feed to the next tool.
+
+    Four things per assembly, because "what is missing" has two useful readings
+    and both are wanted:
+
+      * ``<label>.only-contigs.fasta`` -- whole contigs the other assembly does
+        not have. This is the plasmid, the phage, the insertion element.
+      * ``<label>.only-regions.fasta`` -- just the stretches nothing over there
+        aligns to, cut out of their contigs and named with their coordinates.
+        A contig that is 90% shared contributes only its novel 10% here, which
+        is the part worth blasting.
+      * ``<label>.contigs.tsv`` -- every contig with its verdict, coverage, best
+        match and depth, for sorting in a spreadsheet or reading with pandas.
+      * ``<label>.components.tsv`` -- the same by connected component, which is
+        where a whole missing molecule shows up.
+
+    Returns ``(kind, path, count)`` for each file written.
+    """
+    outdir = str(outdir)
+    os.makedirs(outdir, exist_ok=True)
+    written: list[tuple[str, str, int]] = []
+
+    def _open(name: str):
+        path = os.path.join(outdir, name)
+        if os.path.exists(path) and not overwrite:
+            raise PlastrError(
+                f"{path} already exists; pass overwrite to replace it"
+            )
+        return path
+
+    def _safe(label: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in label)
+
+    for side, graph in ((diff.a, graph_a), (diff.b, graph_b)):
+        stem = _safe(side.label)
+
+        whole = [
+            (c.name, graph.segments[c.name].sequence)
+            for c in side.contigs
+            if c.status == "missing" and graph.segments.get(c.name) is not None
+            and graph.segments[c.name].sequence
+        ]
+        path = _open(f"{stem}.only-contigs.fasta")
+        write_fasta(path, whole)
+        written.append(("only-contigs", path, len(whole)))
+
+        regions: list[tuple[str, str]] = []
+        for c in side.contigs:
+            seg = graph.segments.get(c.name)
+            if seg is None or not seg.sequence:
+                continue
+            for start, end in c.uncovered_spans:
+                if end - start < min_span:
+                    continue
+                # Coordinates in the name, 1-based inclusive, so the record can
+                # be traced back to the contig it was cut from.
+                regions.append(
+                    (f"{c.name}:{start + 1}-{end} len={end - start}", seg.sequence[start:end])
+                )
+        path = _open(f"{stem}.only-regions.fasta")
+        write_fasta(path, regions)
+        written.append(("only-regions", path, len(regions)))
+
+        path = _open(f"{stem}.contigs.tsv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "contig\tlength\tstatus\tcovered_bp\tcovered_fraction\tuncovered_bp"
+                "\tbest_match\tbest_identity\tdepth\tcomponent\tcircular\n"
+            )
+            for c in side.contigs:
+                fh.write(
+                    f"{c.name}\t{c.length}\t{c.status}\t{c.covered}\t"
+                    f"{c.covered_fraction:.4f}\t{c.uncovered}\t"
+                    f"{c.best_match or ''}\t"
+                    f"{'' if c.best_identity is None else f'{c.best_identity:.4f}'}\t"
+                    f"{'' if c.depth is None else f'{c.depth:.2f}'}\t"
+                    f"{c.component}\t{int(c.circular)}\n"
+                )
+        written.append(("contigs-tsv", path, len(side.contigs)))
+
+        path = _open(f"{stem}.components.tsv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("component\tcontigs\tlength\tstatus\tcovered_fraction\tcircular\tmembers\n")
+            for c in side.components:
+                fh.write(
+                    f"{c.index}\t{len(c.contigs)}\t{c.length}\t{c.status}\t"
+                    f"{c.covered_fraction:.4f}\t{int(c.circular)}\t{','.join(c.contigs)}\n"
+                )
+        written.append(("components-tsv", path, len(side.components)))
+
+    return written

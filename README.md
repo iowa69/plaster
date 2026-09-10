@@ -357,7 +357,54 @@ Every side-by-side statistic says they are the same assembly. They are not.
 ![The comparison report](docs/images/diff-report.png)
 
 *The report: each assembly as a bar of what the other one covers, then the
-components and contigs not fully present, in both directions.*
+components and contigs not fully present, in both directions — named, with
+lengths, coverage, depth and their best match on the other side.*
+
+#### Two graphs that say it faster than the tables
+
+![The entanglement map and the similarity plot](docs/images/diff-charts.png)
+
+**The entanglement map** draws both assemblies as a track of contigs to scale,
+with a ribbon for every pair that aligns — the heavier the ribbon, the more
+sequence they share. What you look at is not the ribbons but the gaps: a contig
+with nothing attached is sequence the other assembly does not have, and it sits
+there unconnected in red. Ribbons that cross mean the two assemblies cut the
+same molecule into different pieces. Contigs that are not fully shared are
+always drawn whatever their size — an insertion element is short, and dropping
+it for being short would defeat the point — and the figure says how many
+agreeing contigs it left out.
+
+**The similarity plot** is one point per contig: length across, how much the
+other assembly covers up the side, filled for the first assembly and hollow for
+the second. A clean pair is a solid line along the top. The two red dots at the
+bottom are the answer — one at 41 kb, one at 6.8 kb.
+
+#### Getting the sequence back
+
+```bash
+plastr diff examples/demo/bacterium.gfa examples/demo/bacterium_variant.gfa \
+    -o gained_and_lost/
+```
+
+Four files per assembly, because "what is missing" has two useful readings:
+
+| File | What is in it |
+|---|---|
+| `<name>.only-contigs.fasta` | Whole contigs the other assembly does not have — the plasmid, the phage, the insertion element, ready to BLAST |
+| `<name>.only-regions.fasta` | Only the stretches nothing over there aligns to, cut out and named with their coordinates (`plasmid:1-41000`). A contig that is 90% shared contributes just its novel 10% |
+| `<name>.contigs.tsv` | Every contig with its verdict, coverage, uncovered bases, best match, identity, depth and component |
+| `<name>.components.tsv` | The same by connected component, which is where a whole missing molecule shows up |
+
+```
+  written to gained_and_lost/
+    only-contigs    bacterium.only-contigs.fasta            1 record(s)
+    only-regions    bacterium.only-regions.fasta            1 record(s)
+    contigs-tsv     bacterium.contigs.tsv                 178 record(s)
+    components-tsv  bacterium.components.tsv                3 record(s)
+    ...
+```
+
+Add `--json` for the whole comparison as one machine-readable blob.
 
 #### Seeing it rather than reading it
 

@@ -204,3 +204,113 @@ def test_to_dict_is_serialisable_and_complete():
     assert blob["a"]["counts"]["missing"] == 1
     assert blob["preset"] == "asm5"
     assert "contigs" in blob["b"] and "components" in blob["b"]
+
+
+# ------------------------------------------------------------ span arithmetic
+
+
+def test_invert_spans_is_the_complement():
+    from plastr.core.analysis.diff import invert_spans
+
+    assert invert_spans([], 100) == [(0, 100)]
+    assert invert_spans([(0, 100)], 100) == []
+    assert invert_spans([(10, 20)], 100) == [(0, 10), (20, 100)]
+    assert invert_spans([(0, 30), (70, 100)], 100) == [(30, 70)]
+    # Overlapping and unsorted input must still give a clean complement.
+    assert invert_spans([(70, 100), (0, 30), (10, 25)], 100) == [(30, 70)]
+    # Spans past the end are clamped rather than producing negative gaps.
+    assert invert_spans([(90, 500)], 100) == [(0, 90)]
+
+
+# ------------------------------------------------------------- recovering it
+
+
+@needs_aligner
+def test_write_outputs_recovers_the_missing_sequence(tmp_path):
+    rng = random.Random(8)
+    shared = _seq(rng, 30_000)
+    plasmid = _seq(rng, 12_000)
+
+    a = _graph([("chr", shared), ("plasmid", plasmid)])
+    b = _graph([("chr", shared)])
+    d = diff_graphs(a, b, "A", "B", preset="asm5")
+
+    from plastr.core.analysis.diff import write_outputs
+
+    written = write_outputs(d, a, b, tmp_path)
+    kinds = {kind for kind, _, _ in written}
+    assert kinds == {"only-contigs", "only-regions", "contigs-tsv", "components-tsv"}
+
+    # The plasmid comes back, sequence intact, so it can go straight into BLAST.
+    text = (tmp_path / "A.only-contigs.fasta").read_text()
+    assert ">plasmid" in text
+    assert "".join(text.split("\n")[1:]).strip() == plasmid
+    # And nothing from the chromosome, which B has.
+    assert ">chr" not in text
+
+    # B lost nothing, so its file exists and is empty rather than missing.
+    assert (tmp_path / "B.only-contigs.fasta").read_text().strip() == ""
+
+    # The regions file names its coordinates.
+    regions = (tmp_path / "A.only-regions.fasta").read_text()
+    assert "plasmid:1-12000" in regions
+
+    rows = (tmp_path / "A.contigs.tsv").read_text().strip().split("\n")
+    assert rows[0].startswith("contig\tlength\tstatus")
+    assert len(rows) == 3  # header plus two contigs
+    assert any(r.startswith("plasmid\t12000\tmissing") for r in rows)
+
+
+@needs_aligner
+def test_only_regions_carries_the_novel_part_of_a_partial_contig(tmp_path):
+    # The point of the regions file: a contig that is mostly shared contributes
+    # only its novel insert, not the whole contig.
+    rng = random.Random(9)
+    left = _seq(rng, 20_000)
+    insert = _seq(rng, 5_000)
+
+    a = _graph([("withinsert", left + insert)])
+    b = _graph([("plain", left)])
+    d = diff_graphs(a, b, "A", "B", preset="asm5")
+
+    from plastr.core.analysis.diff import write_outputs
+
+    write_outputs(d, a, b, tmp_path)
+    # Partial, so it is not in only-contigs ...
+    assert (tmp_path / "A.only-contigs.fasta").read_text().strip() == ""
+    # ... but its uncovered tail is in only-regions, and it is the insert.
+    regions = (tmp_path / "A.only-regions.fasta").read_text()
+    body = "".join(line for line in regions.split("\n") if not line.startswith(">"))
+    assert 4_000 < len(body) < 6_000
+    assert body in (left + insert)
+
+
+@needs_aligner
+def test_write_outputs_refuses_to_clobber(tmp_path):
+    rng = random.Random(10)
+    a = _graph([("x", _seq(rng, 9_000))])
+    b = _graph([("y", _seq(rng, 9_000))])
+    d = diff_graphs(a, b, "A", "B", preset="asm5")
+
+    from plastr.core.analysis.diff import write_outputs
+
+    write_outputs(d, a, b, tmp_path)
+    with pytest.raises(PlastrError, match="already exists"):
+        write_outputs(d, a, b, tmp_path)
+    write_outputs(d, a, b, tmp_path, overwrite=True)
+
+
+@needs_aligner
+def test_matches_are_recorded_for_the_map(tmp_path):
+    rng = random.Random(11)
+    shared = _seq(rng, 25_000)
+    a = _graph([("a1", shared), ("a2", _seq(rng, 7_000))])
+    b = _graph([("b1", shared)])
+    d = diff_graphs(a, b, "A", "B", preset="asm5")
+
+    pairs = {(q, r) for q, r, _ in d.a.matches}
+    assert ("a1", "b1") in pairs
+    # The unmatched contig has no edge at all, which is what leaves it hanging
+    # unconnected in the entanglement map.
+    assert not any(q == "a2" for q, _, _ in d.a.matches)
+    assert all(w > 0 for _, _, w in d.a.matches)

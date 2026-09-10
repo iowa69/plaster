@@ -108,6 +108,27 @@
     {% endfor %}
   </div>
 
+  <h2>The entanglement map</h2>
+  <p class="lede">
+    Both assemblies as a track of contigs, drawn to scale and ordered by length,
+    with a ribbon for every pair that aligns &mdash; the heavier the ribbon, the
+    more sequence they share. What to look for is not the ribbons but the gaps:
+    a contig with nothing attached is sequence the other assembly does not have,
+    and it sits there unconnected in red. Ribbons that cross mean the two
+    assemblies cut the same molecule into different pieces. Hover any block or
+    ribbon for its name and size.
+  </p>
+  {{ entanglement | safe }}
+
+  <h2>Every contig, by length and by how much is shared</h2>
+  <p class="lede">
+    One point per contig, filled for {{ a.label }} and hollow for {{ b.label }}.
+    A clean pair sits as a solid line along the top. Anything low is sequence the
+    other assembly lacks, and anything low <em>and</em> to the right is a long
+    contig it lacks &mdash; usually the one that matters.
+  </p>
+  {{ similarity | safe }}
+
   {% for s in [a, b] %}
   <h2>{{ s.label }}: not fully present in {{ s.other }}</h2>
 

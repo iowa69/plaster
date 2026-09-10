@@ -1117,6 +1117,211 @@ def _environment():
     return env
 
 
+#: Status colours, shared by every chart in the comparison report so the same
+#: idea is always the same colour.
+DIFF_COLOURS = {"shared": "#3d8f5b", "partial": "#d99a2b", "missing": "#c4553d"}
+
+#: Contigs drawn per track in the entanglement map before it stops being a
+#: picture and becomes a barcode. Contigs that are not fully shared are always
+#: drawn and do not count against this.
+MAP_MAX_CONTIGS = 55
+
+
+def svg_entanglement(diff: Any, width: int = 900, height: int = 330) -> str:
+    """Which contig over there accounts for which contig over here.
+
+    Both assemblies are drawn as a track of contigs to scale, one above the
+    other, and every pair that aligns is joined by a ribbon whose weight is the
+    aligned length. What the eye is drawn to is not the ribbons but the gaps:
+    a contig with nothing attached to it is sequence the other assembly does not
+    have, and it sits there unconnected in red.
+
+    A tangle of crossing ribbons is itself informative -- it means the two
+    assemblies cut the same molecule into different pieces.
+    """
+    a, b = diff.a, diff.b
+    if not a.contigs or not b.contigs:
+        return _empty_chart("nothing to compare", height=height, width=width)
+
+    pad, track_h = 14, 26
+    top_y, bot_y = 52.0, height - 52.0 - track_h
+    span = width - 2 * pad
+
+    def shown(side) -> list:
+        """The contigs worth drawing: the longest, plus every odd one.
+
+        A track of two hundred slivers is unreadable, and dropping by length
+        alone would throw away the small missing contigs that are the whole
+        point -- an insertion element is short. So every contig that is not
+        fully shared is kept whatever its size, and the length cut only thins
+        out the agreeing majority.
+        """
+        rows = sorted(side.contigs, key=lambda c: -c.length)
+        odd = [c for c in rows if c.status != "shared"]
+        keep = {c.name for c in odd}
+        for c in rows:
+            if len(keep) >= MAP_MAX_CONTIGS:
+                break
+            keep.add(c.name)
+        return [c for c in rows if c.name in keep]
+
+    def lay(side, rows) -> dict[str, tuple[float, float]]:
+        """Contig name -> (x, w), laid out in length order, gapped."""
+        total = sum(c.length for c in rows) or 1
+        gap = min(2.0, span / max(len(rows), 1) * 0.25)
+        usable = max(1.0, span - gap * max(0, len(rows) - 1))
+        out, x = {}, float(pad)
+        for c in rows:
+            w = max(1.0, usable * (c.length / total))
+            out[c.name] = (x, w)
+            x += w + gap
+        return out
+
+    rows_a, rows_b = shown(a), shown(b)
+    top, bottom = lay(a, rows_a), lay(b, rows_b)
+    status_a = {c.name: c.status for c in a.contigs}
+    status_b = {c.name: c.status for c in b.contigs}
+    hidden = (len(a.contigs) - len(rows_a)) + (len(b.contigs) - len(rows_b))
+
+    parts: list[str] = []
+
+    # Ribbons first, so the contig blocks sit on top of them.
+    ribbons = sorted(a.matches, key=lambda m: -m[2])[:400]
+    heaviest = max((m[2] for m in ribbons), default=1)
+    for q, r, weight in ribbons:
+        if q not in top or r not in bottom:
+            continue
+        x0, w0 = top[q]
+        x1, w1 = bottom[r]
+        cx0, cx1 = x0 + w0 / 2, x1 + w1 / 2
+        y0, y1 = top_y + track_h, bot_y
+        mid = (y0 + y1) / 2
+        thickness = max(0.7, 7.0 * (weight / heaviest))
+        opacity = 0.16 + 0.42 * (weight / heaviest)
+        parts.append(
+            f'<path d="M{_round(cx0)} {_round(y0)} C{_round(cx0)} {_round(mid)} '
+            f'{_round(cx1)} {_round(mid)} {_round(cx1)} {_round(y1)}" fill="none" '
+            f'stroke="#4c7bd9" stroke-width="{_round(thickness)}" '
+            f'stroke-opacity="{_round(opacity)}"><title>{_e(q)} &#8596; {_e(r)}: '
+            f'{fmt_int(weight)} bp aligned</title></path>'
+        )
+
+    def track(rows, layout, statuses, y, label):
+        parts.append(
+            f'<text x="{pad}" y="{_round(y - 9)}" font-size="12" font-weight="600" '
+            f'fill="#1d2430">{_e(label)}</text>'
+        )
+        for c in rows:
+            if c.name not in layout:
+                continue
+            x, w = layout[c.name]
+            colour = DIFF_COLOURS.get(statuses.get(c.name, "shared"), "#8a94a3")
+            parts.append(
+                f'<rect x="{_round(x)}" y="{_round(y)}" width="{_round(w)}" '
+                f'height="{track_h}" fill="{colour}" rx="1.5">'
+                f'<title>{_e(c.name)} · {fmt_bp(c.length)} · {_e(c.status)} · '
+                f'{_round(100.0 * c.covered_fraction)}% covered</title></rect>'
+            )
+            # Name the ones that matter, where there is room for it.
+            if c.status != "shared" and w > 34:
+                parts.append(
+                    f'<text x="{_round(x + w / 2)}" y="{_round(y + track_h / 2 + 4)}" '
+                    f'text-anchor="middle" font-size="10" fill="#ffffff">{_e(c.name[:18])}</text>'
+                )
+
+    track(rows_a, top, status_a, top_y, a.label)
+    track(rows_b, bottom, status_b, bot_y, b.label)
+    if hidden:
+        parts.append(
+            f'<text x="{width - pad}" y="{_round(top_y - 9)}" text-anchor="end" '
+            f'font-size="10" fill="#8a94a3">{fmt_int(hidden)} shorter shared '
+            f'contig(s) not drawn</text>'
+        )
+
+    legend_y = height - 10
+    lx = pad
+    for name, colour in (("in both", DIFF_COLOURS["shared"]),
+                         ("partly missing", DIFF_COLOURS["partial"]),
+                         ("only here", DIFF_COLOURS["missing"])):
+        parts.append(
+            f'<rect x="{lx}" y="{legend_y - 9}" width="9" height="9" fill="{colour}"/>'
+            f'<text x="{lx + 13}" y="{legend_y - 1}" font-size="10" fill="#5d6875">{_e(name)}</text>'
+        )
+        lx += 26 + 6 * len(name)
+
+    return (
+        f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" '
+        f'style="max-width:{width}px" role="img" '
+        f'aria-label="Which contigs of each assembly align to which of the other" '
+        f'xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
+    )
+
+
+def svg_similarity(diff: Any, width: int = 900, height: int = 340) -> str:
+    """Every contig as a point: how long it is against how much is shared.
+
+    The shape of the cloud is the finding. A clean pair sits as a solid line
+    along the top. Anything low is sequence the other assembly does not have,
+    and anything low *and* to the right is a long contig it does not have --
+    which is the one you care about, and the reason length is on a log scale.
+    """
+    rows = [(c, "a") for c in diff.a.contigs] + [(c, "b") for c in diff.b.contigs]
+    rows = [r for r in rows if r[0].length > 0]
+    if not rows:
+        return _empty_chart("nothing to compare", height=height, width=width)
+
+    lengths = [c.length for c, _ in rows]
+    lo, hi = max(1, min(lengths)), max(lengths)
+    if hi <= lo:
+        hi = lo * 10
+
+    plot = _Plot(width=width, height=height, margin=(30, 18, 46, 74),
+                 title="Contig length against how much the other assembly has")
+    plot.set_domain(lo, hi, 0, 100, log_x=True)
+    plot.frame(
+        _log_ticks(lo, hi),
+        [0, 25, 50, 75, 100],
+        x_label="contig length (bp, log scale)",
+        y_label="covered by the other assembly (%)",
+        y_fmt=lambda v: f"{v:.0f}%",
+    )
+
+    # Marks, smallest first so a big missing contig lands on top of the pile.
+    for c, which in sorted(rows, key=lambda r: r[0].length):
+        x = plot.sx(max(1, c.length))
+        y = plot.sy(100.0 * c.covered_fraction)
+        r = max(2.6, min(11.0, 2.0 + 2.4 * math.log10(max(10, c.length)) - 2.0))
+        colour = DIFF_COLOURS.get(c.status, "#8a94a3")
+        # Which assembly it came from: filled for the first, ringed for the
+        # second, so one chart carries both without doubling the colours.
+        fill, stroke_w = (colour, 0.0) if which == "a" else ("#ffffff", 1.8)
+        plot.add(
+            f'<circle cx="{_round(x)}" cy="{_round(y)}" r="{_round(r)}" fill="{fill}" '
+            f'stroke="{colour}" stroke-width="{_round(stroke_w or 0.8)}" fill-opacity="0.82">'
+            f'<title>{_e(c.name)} ({_e(diff.a.label if which == "a" else diff.b.label)}) · '
+            f'{fmt_bp(c.length)} · {_round(100.0 * c.covered_fraction)}% covered</title></circle>'
+        )
+
+    # Legend along the top, inside the plot: at the bottom it collided with the
+    # axis label, and the top of this chart is where the shared contigs pile up
+    # rather than where anything needs reading.
+    lx, ly = plot.left + 6, 12
+    for name, colour in (("in both", DIFF_COLOURS["shared"]),
+                         ("partly missing", DIFF_COLOURS["partial"]),
+                         ("only here", DIFF_COLOURS["missing"])):
+        plot.add(
+            f'<circle cx="{lx + 5}" cy="{ly}" r="4.5" fill="{colour}"/>'
+            f'<text x="{lx + 14}" y="{ly + 4}" font-size="10" fill="#5d6875">{_e(name)}</text>'
+        )
+        lx += 30 + 6 * len(name)
+    plot.add(
+        f'<circle cx="{lx + 5}" cy="{ly}" r="4.5" fill="#ffffff" stroke="#5d6875" stroke-width="1.6"/>'
+        f'<text x="{lx + 14}" y="{ly + 4}" font-size="10" fill="#5d6875">'
+        f'{_e(diff.b.label)} (hollow)</text>'
+    )
+    return plot.render()
+
+
 def svg_diff_bar(side: Any, width: int = 520, height: int = 46) -> str:
     """One assembly as a bar: how much of it the other one has.
 
@@ -1207,6 +1412,8 @@ def build_diff_report(diff: Any, title: str = "Plastr comparison") -> str:
     context = {
         "title": title,
         "generated": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z").strip(),
+        "entanglement": svg_entanglement(diff),
+        "similarity": svg_similarity(diff),
         "preset": diff.preset,
         "shared_fraction": 100.0 * diff.shared_fraction,
         "present_fraction": 100.0 * diff.present_fraction,
