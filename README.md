@@ -89,6 +89,7 @@ without it. The demo builds two datasets in `examples/demo/`:
 |---|---|
 | `assembly.gfa` + `reference.fasta` | Ten contigs with **known** errors planted in them — one inversion, one relocation, one translocation, one contig with no reference match. Use this to check that the numbers are right. |
 | `bacterium.gfa` | 178 segments, 1.40 Mb: one strain — a chromosome still in pieces, a draft plasmid, and one small plasmid that closed into a single circular contig. Collapsed repeats and bubbles where an assembler leaves them. Nothing planted; this one is for looking at. |
+| `bacterium_variant.gfa` | A second isolate of that strain, a few SNPs apart, which has lost the plasmid and gained an insertion element. For `plastr diff`. |
 
 **2. Open the graph.**
 
@@ -323,20 +324,53 @@ that never align at all**. On a pair of isolates that is a plasmid one carries
 and the other does not — the thing no table of contiguity statistics can show,
 and the reason this is useful for mobile elements and small contigs.
 
-```
-    Components not fully in isolate_B
-    ------------------------------------------------------
-    !   1 contig(s)    52.00 kb  circular  missing    0.0 % covered
-    !   1 contig(s)     4.10 kb  linear    missing    0.0 % covered
-```
-
-To see it rather than read it, load the comparison in the studio and colour by
-it — shared contigs go green, partly-missing amber, and the ones the other
-assembly does not have at all go red:
+The demo builds a second isolate of the same strain, so you can run it now:
 
 ```bash
-plastr view isolate_A.gfa --diff isolate_B.gfa
+plastr diff examples/demo/bacterium.gfa examples/demo/bacterium_variant.gfa \
+    --html comparison.html
 ```
+
+The two isolates are a few SNPs apart — the same organism sequenced twice — but
+one has lost a plasmid and the other has gained an insertion element:
+
+```
+  bacterium
+    also in bacterium_variant          1.36 Mb  (97.08 %)
+    contigs shared / partial / missing    177 /     0 /     1
+
+    Components not fully in bacterium_variant
+    ------------------------------------------------------
+    !   1 contig(s)    41.00 kb  circular  missing    0.0 % covered
+
+  bacterium_variant
+    also in bacterium                  1.36 Mb  (99.50 %)
+
+    Components not fully in bacterium
+    ------------------------------------------------------
+    !   1 contig(s)     6.80 kb  linear    missing    0.0 % covered
+```
+
+Note that both assemblies are ~1.4 Mb with 178 contigs and near-identical N50.
+Every side-by-side statistic says they are the same assembly. They are not.
+
+![The comparison report](docs/images/diff-report.png)
+
+*The report: each assembly as a bar of what the other one covers, then the
+components and contigs not fully present, in both directions.*
+
+#### Seeing it rather than reading it
+
+```bash
+plastr view examples/demo/bacterium.gfa --diff examples/demo/bacterium_variant.gfa
+```
+
+The studio gains a **comparison** colour mode: shared contigs green,
+partly-missing amber, and the ones the other assembly does not have at all red.
+A lost plasmid stops being a row in a table and becomes a red ring sitting next
+to a green chromosome.
+
+![Colouring by what the other assembly lacks](docs/images/diff-view.png)
 
 ---
 

@@ -153,15 +153,34 @@ def write_bacterium(outdir: str) -> tuple[str, int, int]:
     closed = emit("plasmid_closed", random_seq(rng, 41_000), background * 1.15)
     links.append((closed, "+", closed, "+"))
 
-    path = os.path.join(outdir, "bacterium.gfa")
-    lines = ["H\tVN:Z:1.0"]
-    for name, seq, depth in segments:
-        lines.append(f"S\t{name}\t{seq}\tdp:f:{depth}\tLN:i:{len(seq)}")
-    for a, ao, b, bo in sorted(set(links)):
-        lines.append(f"L\t{a}\t{ao}\t{b}\t{bo}\t0M")
-    with open(path, "w") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return path, len(segments), len(set(links))
+    def dump(where: str, segs, lnks) -> str:
+        lines = ["H\tVN:Z:1.0"]
+        for name, seq, depth in segs:
+            lines.append(f"S\t{name}\t{seq}\tdp:f:{depth}\tLN:i:{len(seq)}")
+        keep = {n for n, _, _ in segs}
+        for a, ao, b, bo in sorted(set(lnks)):
+            if a in keep and b in keep:
+                lines.append(f"L\t{a}\t{ao}\t{b}\t{bo}\t0M")
+        with open(where, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return where
+
+    path = dump(os.path.join(outdir, "bacterium.gfa"), segments, links)
+
+    # A second isolate of the same strain, for `plastr diff`. It is the same
+    # organism -- a few SNPs apart, which is what two sequencing runs of one
+    # isolate look like -- but it has lost the plasmid and gained a small
+    # insertion of its own. That is the comparison worth being able to make and
+    # the one no table of contiguity statistics answers.
+    variant = [
+        (name, mutate(rng, seq, 0.0004), depth)
+        for name, seq, depth in segments
+        if name != closed
+    ]
+    variant.append(("insertion_element", random_seq(rng, 6_800), background * 1.4))
+    variant_path = dump(os.path.join(outdir, "bacterium_variant.gfa"), variant, links)
+
+    return path, len(segments), len(set(links)), variant_path, len(variant)
 
 
 def main(outdir: str = "examples/demo") -> None:
@@ -247,13 +266,14 @@ def main(outdir: str = "examples/demo") -> None:
     with open(os.path.join(outdir, "truth.json"), "w") as fh:
         json.dump(truth, fh, indent=2)
 
-    bact, bact_segments, bact_links = write_bacterium(outdir)
+    bact, bact_segments, bact_links, variant, variant_segments = write_bacterium(outdir)
 
     print(f"reference : {reference}  ({len(chrom) + len(plasmid):,} bp, 2 sequences)")
     print(f"graph     : {gfa}  ({len(contigs)} segments, {len(links)} links)")
     print(f"contigs   : {os.path.join(outdir, 'contigs.fasta')}")
     print(f"truth     : {truth['expected']}")
     print(f"big graph : {bact}  ({bact_segments} segments, {bact_links} links)")
+    print(f"variant   : {variant}  ({variant_segments} segments, for 'plastr diff')")
 
 
 if __name__ == "__main__":
